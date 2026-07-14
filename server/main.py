@@ -10,6 +10,7 @@ import logging
 import queue
 import threading
 import time
+import wave
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +31,7 @@ log = logging.getLogger("livebridge")
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
+RECORD_DIR = ROOT / "recordings"
 
 app = FastAPI(title="LiveBridge")
 app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
@@ -37,11 +39,38 @@ app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 PUMP_TIMEOUT = 0.2  # 큐 대기 시간 = 무음 시 tick 간격
 
 
+class _WavRecorder:
+    """캡처 오디오(16kHz 모노)를 WAV로 저장. 무음 구간은 0으로 채워 시간 정렬 유지."""
+
+    def __init__(self, kind: str):
+        RECORD_DIR.mkdir(exist_ok=True)
+        tag = "마이크" if kind == "mic" else "시스템"
+        self.path = RECORD_DIR / f"{time.strftime('%Y%m%d_%H%M%S')}_{tag}.wav"
+        self.wf = wave.open(str(self.path), "wb")
+        self.wf.setnchannels(1)
+        self.wf.setsampwidth(2)
+        self.wf.setframerate(config.TARGET_SR)
+
+    def write(self, chunk: np.ndarray):
+        self.wf.writeframes((np.clip(chunk, -1.0, 1.0) * 32767).astype("<i2").tobytes())
+
+    def write_silence(self, sec: float):
+        self.wf.writeframes(b"\x00\x00" * int(config.TARGET_SR * sec))
+
+    def close(self) -> Path:
+        try:
+            self.wf.close()
+        except Exception:
+            pass
+        return self.path
+
+
 class Pipeline:
     """소스 1개(system 또는 mic)에 대한 캡처→조립 파이프라인."""
 
     def __init__(self, kind: str, session: "Session"):
         self.kind = kind
+        self.session = session
         self.q: "queue.Queue[np.ndarray]" = queue.Queue()
         self.asm = SegmentAssembler(source=kind,
                                     on_partial=session.on_partial,
@@ -58,27 +87,43 @@ class Pipeline:
         """큐에서 오디오를 모아 BLOCK_SEC 단위로 조립기에 공급.
         루프백은 무음 중 콜백이 안 오므로, 큐 타임아웃을 침묵 시간으로 흘린다."""
         block = int(config.TARGET_SR * config.BLOCK_SEC)
-        while not self._stop.is_set():
-            try:
-                chunk = self.q.get(timeout=PUMP_TIMEOUT)
-            except queue.Empty:
-                # 콜백이 끊겼다 = 무음 시작. 블록 미만으로 남은 오디오(마지막 음절)를
-                # 먼저 흘려보내야 tick-확정 때 잘리지 않고, 다음 발화에 섞이지도 않는다.
-                if self._acc_len > 0:
-                    rest = np.concatenate(self._acc)
-                    self._acc, self._acc_len = [], 0
-                    if len(rest) < 512:  # silero VAD 최소 창 크기 확보
-                        rest = np.pad(rest, (0, 512 - len(rest)))
-                    self.asm.feed(rest)
-                self.asm.tick(PUMP_TIMEOUT)
-                continue
-            self._acc.append(chunk)
-            self._acc_len += len(chunk)
-            while self._acc_len >= block:
-                buf = np.concatenate(self._acc)
-                self._acc = [buf[block:]] if len(buf) > block else []
-                self._acc_len = len(buf) - block
-                self.asm.feed(buf[:block])
+        rec: Optional[_WavRecorder] = None
+        try:
+            while not self._stop.is_set():
+                try:
+                    chunk = self.q.get(timeout=PUMP_TIMEOUT)
+                except queue.Empty:
+                    # 콜백이 끊겼다 = 무음 시작. 블록 미만으로 남은 오디오(마지막 음절)를
+                    # 먼저 흘려보내야 tick-확정 때 잘리지 않고, 다음 발화에 섞이지도 않는다.
+                    if self._acc_len > 0:
+                        rest = np.concatenate(self._acc)
+                        self._acc, self._acc_len = [], 0
+                        if len(rest) < 512:  # silero VAD 최소 창 크기 확보
+                            rest = np.pad(rest, (0, 512 - len(rest)))
+                        self.asm.feed(rest)
+                    self.asm.tick(PUMP_TIMEOUT)
+                    if rec is not None:
+                        rec.write_silence(PUMP_TIMEOUT)  # 무음도 채워 시간 정렬 유지
+                    continue
+                # ---- 녹음 (원본 16k 모노 그대로) ----
+                if self.session.recording:
+                    if rec is None:
+                        rec = _WavRecorder(self.kind)
+                        self.session.notice(f"🔴 녹음 시작 ({self.kind})")
+                    rec.write(chunk)
+                elif rec is not None:
+                    self.session.notice(f"💾 녹음 저장: {rec.close().name}")
+                    rec = None
+                self._acc.append(chunk)
+                self._acc_len += len(chunk)
+                while self._acc_len >= block:
+                    buf = np.concatenate(self._acc)
+                    self._acc = [buf[block:]] if len(buf) > block else []
+                    self._acc_len = len(buf) - block
+                    self.asm.feed(buf[:block])
+        finally:
+            if rec is not None:
+                self.session.notice(f"💾 녹음 저장: {rec.close().name}")
 
     def start(self):
         self.src.start()
@@ -109,6 +154,7 @@ class Session:
         self.translator: Optional[Translator] = None
         self.transcript: list[dict] = []
         self.live_translation = True
+        self.recording = False
         self._last_mt_words: dict[str, int] = {}   # 소스별 마지막 부분번역 안정단어 수
         self._last_seg_id: dict[str, str] = {}     # 소스별 현재 세그먼트 id
         self._start_lock = threading.Lock()
@@ -131,6 +177,10 @@ class Session:
         if sysinfo:
             msg["sysinfo"] = sysinfo
         self.broadcast(msg)
+
+    def notice(self, detail: str):
+        """상태 필에 잠깐 표시되는 안내 (녹음 시작/저장 등)."""
+        self.broadcast({"type": "notice", "detail": detail})
 
     # ---------- 파이프라인 콜백 ----------
     def on_partial(self, u: Utterance):
@@ -295,6 +345,8 @@ async def ws_endpoint(ws: WebSocket):
                 source = msg.get("source", "system")
                 engine = msg.get("engine", config.TRANSLATE_ENGINE_DEFAULT)
                 model = msg.get("model")
+                if "recording" in msg:
+                    session.recording = bool(msg["recording"])
                 threading.Thread(target=session.start_pipeline,
                                  args=(source, engine, model), daemon=True).start()
             elif t == "stop":
@@ -302,6 +354,8 @@ async def ws_endpoint(ws: WebSocket):
             elif t == "options":
                 if "live_translation" in msg:
                     session.live_translation = bool(msg["live_translation"])
+                if "recording" in msg:
+                    session.recording = bool(msg["recording"])
                 if "engine" in msg and session.translator:
                     session.translator.set_engine(msg["engine"])
                 if "model" in msg and session.translator:

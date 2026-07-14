@@ -60,15 +60,17 @@ GGUF_PRESETS = {
 }
 GGUF_GPU_LAYERS = os.environ.get("LB_GGUF_GPU_LAYERS", "auto")  # auto = 남은 VRAM 보고 결정
 
-# 오전사 보정용 소형 모델 — 번역 특화 모델(Seed-X)은 채팅형이 아니라 맥락 보정을
-# 못 하므로, seedx 선택 시 이 모델이 보정 단계로 함께 뜬다 (기본 Qwen 경로는 불필요)
+# 오전사 보정용 모델 — 번역 특화 모델(Seed-X)은 채팅형이 아니라 맥락 보정을
+# 못 하므로, seedx 선택 시 이 모델이 보정 단계로 함께 뜬다 (기본 Qwen 경로는 불필요).
+# 1.7B는 실험 결과 보정 능력이 부족해(원문 복사만 함) 4B를 사용 — VRAM이 부족하면
+# auto-layers가 일부/전부 CPU로 내리며, 보정은 확정 문장에만 돌아서 감당 가능.
 CORRECTOR_GGUF = {
-    "repo": "unsloth/Qwen3-1.7B-GGUF",
-    "file": "Qwen3-1.7B-Q4_K_M.gguf",
+    "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+    "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
     "mode": "correct",
-    "layers": 28,
-    "vram_full_gb": 1.6,
-    "label": "보정AI(Qwen3-1.7B)",
+    "layers": 36,
+    "vram_full_gb": 3.4,
+    "label": "보정AI(Qwen3-4B)",
 }
 
 # transformers 폴백용 LLM

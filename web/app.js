@@ -14,6 +14,7 @@ const els = {
   drawer: $("drawer"), drawerBackdrop: $("drawerBackdrop"), drawerClose: $("drawerClose"),
   fontSize: $("fontSize"), fontSizeVal: $("fontSizeVal"),
   showSource: $("showSource"), livePartialTrans: $("livePartialTrans"),
+  recordToggle: $("recordToggle"),
   themeSeg: $("themeSeg"), engineSelect: $("engineSelect"),
   modelSection: $("modelSection"), modelSelect: $("modelSelect"),
   clearBtn: $("clearBtn"), sysInfoBody: $("sysInfoBody"),
@@ -34,6 +35,7 @@ const settings = {
   fontSize: 110,
   showSource: true,
   livePartialTrans: true,
+  recording: false,
   theme: "dark",
   engine: "local",
   model: "qwen3-4b",
@@ -59,6 +61,7 @@ function applySettings() {
   document.body.classList.toggle("hide-source", !settings.showSource);
   els.showSource.checked = settings.showSource;
   els.livePartialTrans.checked = settings.livePartialTrans;
+  els.recordToggle.checked = settings.recording;
   document.documentElement.setAttribute("data-theme", settings.theme);
   els.themeSeg.querySelectorAll(".seg-btn").forEach(b =>
     b.classList.toggle("active", b.dataset.themeVal === settings.theme));
@@ -79,7 +82,7 @@ function connect() {
     send({ type: "hello" });
     // 서버 상태와 로컬 설정 동기화 (서버 재시작/다른 브라우저 대비)
     send({ type: "options", live_translation: settings.livePartialTrans,
-           engine: settings.engine, model: settings.model });
+           engine: settings.engine, model: settings.model, recording: settings.recording });
   };
 
   ws.onmessage = (ev) => {
@@ -151,6 +154,17 @@ function handleMessage(msg) {
     }
     case "error_toast": {
       setStatus("error", msg.detail || "오류가 발생했어요");
+      break;
+    }
+    case "notice": {
+      // 상태 필에 잠깐 표시 후 원래 상태 문구로 복귀
+      const text = msg.detail || "";
+      setStatus(running ? "live" : "idle", text);
+      setTimeout(() => {
+        if (els.statusText.textContent === text) {
+          setStatus(running ? "live" : "idle", running ? "듣는 중" : "대기 중");
+        }
+      }, 4000);
       break;
     }
   }
@@ -367,6 +381,11 @@ els.livePartialTrans.onchange = () => {
   saveSettings();
   send({ type: "options", live_translation: settings.livePartialTrans });
   if (!settings.livePartialTrans) els.liveTransRow.classList.add("hidden");
+};
+els.recordToggle.onchange = () => {
+  settings.recording = els.recordToggle.checked;
+  saveSettings();
+  send({ type: "options", recording: settings.recording });
 };
 els.themeSeg.onclick = (e) => {
   const btn = e.target.closest(".seg-btn");

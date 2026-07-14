@@ -17,15 +17,24 @@ import sys
 
 from server.translator import LANG_NAME, SYSTEM_PROMPT, build_user_content
 
-# 오전사 보정 모드 프롬프트 (Qwen3-1.7B — /no_think로 추론 모드 끔)
+# 오전사 보정 모드 프롬프트 + few-shot (작은 모델일수록 예시가 결정적)
 CORRECT_PROMPT = (
-    "You clean up real-time speech-recognition transcripts. "
-    "You are given recent conversation lines and the last transcribed [Line]. "
-    "Output ONLY the corrected version of the [Line], in the SAME language it is written in. "
-    "Fix words that were likely mis-heard (replaced by similar-sounding words) using the context. "
+    "You fix speech-to-text transcription errors from a live meeting. "
+    "Given recent conversation lines and the last transcribed [Line], "
+    "output ONLY the corrected version of the [Line], in the SAME language it is written in. "
+    "Words may have been replaced by similar-SOUNDING wrong words - find and fix them using the context. "
     "If the line already looks correct, output it unchanged. "
-    "Never translate. Never add explanations or quotes. /no_think"
+    "Never translate. Never add explanations or quotes."
 )
+CORRECT_FEWSHOT = [
+    ("[Context]\nWe should merge the branch today.\nThe build passed.\n\n"
+     "[Line]\nLet's dip Roy the new version tonight.",
+     "Let's deploy the new version tonight."),
+    ("[Context]\n요즘 GPU 가격이 너무 올랐어\n\n[Line]\n그래서 새 그래픽 가드를 못 사겠어",
+     "그래서 새 그래픽 카드를 못 사겠어"),
+    ("[Context]\n내일 회의 몇 시야?\n\n[Line]\n오후 세 시에 시작해",
+     "오후 세 시에 시작해"),
+]
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
@@ -64,12 +73,15 @@ def main():
                 result = out["choices"][0]["text"].strip()
             elif args.mode == "correct":
                 ctx = "\n".join(c for c in context[-6:] if c)
-                user = (f"[Conversation so far]\n{ctx}\n\n[Line]\n{text}" if ctx
-                        else f"[Line]\n{text}")
+                messages = [{"role": "system", "content": CORRECT_PROMPT}]
+                for u, a in CORRECT_FEWSHOT:
+                    messages.append({"role": "user", "content": u})
+                    messages.append({"role": "assistant", "content": a})
+                messages.append({"role": "user",
+                                 "content": (f"[Context]\n{ctx}\n\n[Line]\n{text}" if ctx
+                                             else f"[Line]\n{text}")})
                 out = llm.create_chat_completion(
-                    messages=[{"role": "system", "content": CORRECT_PROMPT},
-                              {"role": "user", "content": user}],
-                    temperature=0.0,
+                    messages=messages, temperature=0.0,
                     max_tokens=max(64, len(text) * 2))
                 result = out["choices"][0]["message"]["content"]
                 result = _THINK_RE.sub("", result).strip().strip('"')
