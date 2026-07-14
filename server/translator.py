@@ -43,13 +43,22 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_user_content(text: str, context) -> str:
-    """번역 요청 본문: 최근 대화 맥락 + 번역 대상 문장."""
+def build_user_content(text: str, context, target: str = None) -> str:
+    """번역 요청 본문: 최근 대화 맥락 + 번역 대상 문장 (+ 명시적 지시).
+
+    지시문을 문장 바로 뒤에 붙이는 이유: 시스템 프롬프트만으로는 일부 모델
+    (특히 nothink 프리필 경로의 Qwen3-8B)이 번역하지 않고 원문을 복사한다 (실측).
+    """
     ctx = [c for c in (context or []) if c][-6:]
-    if not ctx:
-        return text
-    return ("[Conversation so far]\n" + "\n".join(ctx)
-            + "\n\n[Line to translate]\n" + text)
+    parts = []
+    if ctx:
+        parts.append("[Conversation so far]\n" + "\n".join(ctx))
+    parts.append("[Line to translate]\n" + text)
+    if target:
+        parts.append(f"Translate the [Line to translate] into natural {target}. "
+                     "Fix likely speech-recognition errors (similar-sounding wrong words) "
+                     "using the context. Output only the translation.")
+    return "\n\n".join(parts)
 
 
 def target_for(src_lang: str) -> str:
@@ -110,12 +119,15 @@ class _GgufWorker:
         self.gpu_layers = _auto_gpu_layers(preset)
         log.info("llama.cpp 워커 시작: %s (mode=%s, gpu_layers=%s)",
                  preset["file"], preset["mode"], self.gpu_layers)
+        cmd = [_sys.executable, "-m", "server.llm_worker",
+               "--model-path", path,
+               "--n-gpu-layers", str(self.gpu_layers),
+               "--n-ctx", "2048",
+               "--mode", preset["mode"]]
+        if preset.get("nothink"):
+            cmd.append("--nothink")
         self.proc = subprocess.Popen(
-            [_sys.executable, "-m", "server.llm_worker",
-             "--model-path", path,
-             "--n-gpu-layers", str(self.gpu_layers),
-             "--n-ctx", "2048",
-             "--mode", preset["mode"]],
+            cmd,
             cwd=str(__import__("pathlib").Path(__file__).resolve().parent.parent),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None,  # stderr는 콘솔로
             text=True, encoding="utf-8", bufsize=1,
@@ -247,7 +259,8 @@ class HfLlmBackend:
         messages = [
             {"role": "system",
              "content": SYSTEM_PROMPT.format(target=LANG_NAME.get(dst, "Korean"))},
-            {"role": "user", "content": build_user_content(text, context)},
+            {"role": "user",
+             "content": build_user_content(text, context, LANG_NAME.get(dst, "Korean"))},
         ]
         # transformers 5.x: apply_chat_template 기본이 return_dict=True (BatchEncoding 반환)
         enc = self.tok.apply_chat_template(

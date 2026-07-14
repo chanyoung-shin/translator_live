@@ -22,19 +22,23 @@ Zoom / Teams / Google Meet 회의 소리를 **컴퓨터 안에서** 실시간으
 |---|---|---|---|
 | 음성 인식 | Whisper **large-v3-turbo** (faster-whisper/CTranslate2, int8_float16) | MIT | ~1.6GB |
 | 번역 (기본) | **Qwen3-4B-Instruct-2507** Q4_K_M (llama.cpp) | Apache-2.0 | ~2.7GB |
-| 번역 (품질 우선) | **Seed-X-PPO-7B** Q4_K_M — 번역 특화 모델 | OpenMDW (허용적) | ~5GB |
+| 번역 (품질 우선) | **Qwen3-8B** Q4_K_M (llama.cpp) | Apache-2.0 | ~5.3GB |
 | 번역 폴백 | NLLB-200-distilled-600M → Google 번역(온라인) | CC-BY-NC / — | ~0.7GB |
 
 RTX 4070 Laptop(8GB) 기준: 기본 조합 ≈ 4.5GB로 Zoom과 GPU를 공유해도 여유가 있습니다.
 
 ### 번역 모델 선택 (설정 ⚙ → 번역 모델)
 
-| 모델 | 파이프라인 | 특징 |
-|---|---|---|
-| **Qwen3-4B** (기본) | 보정+번역을 한 호출에 | 빠름 (실시간성 우선), VRAM 2.7GB |
-| **Seed-X 7B + 보정 AI** | 소형 AI(Qwen3-1.7B)가 맥락으로 오전사 수정 → 번역 특화 모델이 번역 | 문장 품질 최고, VRAM ~6.5GB (부족하면 자동으로 일부 CPU) |
+| 모델 | 특징 |
+|---|---|
+| **Qwen3-4B** (기본) | 빠름 (실시간성 우선), 맥락 오전사 보정, VRAM 2.7GB |
+| **Qwen3-8B** (품질 우선) | 더 정확하고 자연스러운 번역, 맥락 오전사 보정, VRAM ~5.3GB (부족하면 자동으로 일부 CPU) |
 
 앱 실행 중에도 설정에서 바꿀 수 있고, 다음 문장부터 적용됩니다 (이전 모델은 자동으로 내려가 VRAM 회수).
+
+> 참고: 번역 특화 모델 Seed-X-PPO-7B도 시도했으나(`set LB_GGUF=seedx-7b`로 실험 가능),
+> GGUF 변환본에서 언어 태그가 특수 토큰으로 보존되지 않아 영→한 출력이 깨지는 문제를
+> 실측으로 확인해 기본 선택지에서 제외했습니다.
 
 ## 주요 기능
 

@@ -49,10 +49,22 @@ GGUF_PRESETS = {
         "vram_full_gb": 3.4,  # 전체 GPU 오프로드에 필요한 여유 VRAM
         "label": "Qwen3-4B",
     },
+    "qwen3-8b": {
+        "repo": "unsloth/Qwen3-8B-GGUF",
+        "file": "Qwen3-8B-Q4_K_M.gguf",
+        "mode": "chat",
+        "nothink": True,      # 하이브리드 추론 모델 — 빈 <think> 프리필로 즉답 유도
+        "layers": 36,
+        "vram_full_gb": 6.0,
+        "label": "Qwen3-8B",
+    },
+    # 실험용 — UI에는 노출 안 함: Seed-X GGUF는 언어 태그(<ko>)가 특수 토큰으로
+    # 변환되지 않아 en→ko 출력이 깨지는 것을 실측 확인 (조기 EOS/환각 반복).
+    # vLLM 등 원본 가중치 배포에서는 우수하나 llama.cpp 경로에서는 비권장.
     "seedx-7b": {
         "repo": "mradermacher/Seed-X-PPO-7B-GGUF",
         "file": "Seed-X-PPO-7B.Q4_K_M.gguf",
-        "mode": "seedx",      # 번역 특화 고정 프롬프트 → 맥락 보정 미지원
+        "mode": "seedx",      # 번역 특화 고정 프롬프트 → 별도 보정 워커 동반
         "layers": 32,
         "vram_full_gb": 5.6,
         "label": "Seed-X-7B",

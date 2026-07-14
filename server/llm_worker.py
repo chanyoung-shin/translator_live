@@ -45,6 +45,8 @@ def main():
     ap.add_argument("--n-gpu-layers", type=int, default=-1)
     ap.add_argument("--n-ctx", type=int, default=1024)
     ap.add_argument("--mode", choices=["chat", "seedx", "correct"], default="chat")
+    ap.add_argument("--nothink", action="store_true",
+                    help="하이브리드 추론 모델(Qwen3 비-2507)의 생각 모드를 빈 <think> 프리필로 끔")
     args = ap.parse_args()
 
     from llama_cpp import Llama
@@ -87,11 +89,23 @@ def main():
                 result = _THINK_RE.sub("", result).strip().strip('"')
                 if not result:
                     result = text  # 보정 결과가 비면 원문 유지
+            elif args.nothink:
+                # ChatML 수동 구성 + 빈 <think> 프리필 — 하이브리드 모델이 생각을
+                # 건너뛰고 즉답하게 한다 (create_chat_completion으로는 제어 불가)
+                target = LANG_NAME.get(dst, "Korean")
+                system = SYSTEM_PROMPT.format(target=target)
+                user = build_user_content(text, context, target)
+                prompt = (f"<|im_start|>system\n{system}<|im_end|>\n"
+                          f"<|im_start|>user\n{user}<|im_end|>\n"
+                          f"<|im_start|>assistant\n<think>\n\n</think>\n\n")
+                out = llm(prompt, max_tokens=min(512, max(48, len(text) * 2)),
+                          temperature=0.0, stop=["<|im_end|>"])
+                result = out["choices"][0]["text"].strip().strip('"')
             else:
+                target = LANG_NAME.get(dst, "Korean")
                 messages = [
-                    {"role": "system",
-                     "content": SYSTEM_PROMPT.format(target=LANG_NAME.get(dst, "Korean"))},
-                    {"role": "user", "content": build_user_content(text, context)},
+                    {"role": "system", "content": SYSTEM_PROMPT.format(target=target)},
+                    {"role": "user", "content": build_user_content(text, context, target)},
                 ]
                 out = llm.create_chat_completion(
                     messages=messages, temperature=0.0,
