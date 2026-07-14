@@ -72,53 +72,48 @@ class GoogleBackend:
                          target=dst).translate(text)
 
 
-def _auto_gpu_layers() -> int:
-    """남은 VRAM에 맞춰 GPU에 올릴 레이어 수 결정 (부족한데 전부 올리면 네이티브 크래시).
-    Qwen3-4B Q4_K_M 기준: 전체 오프로드에 약 3.2GB 필요."""
+def _auto_gpu_layers(preset: dict) -> int:
+    """남은 VRAM에 맞춰 GPU에 올릴 레이어 수 결정 (부족한데 전부 올리면 네이티브 크래시)."""
     setting = str(config.GGUF_GPU_LAYERS).strip().lower()
     if setting not in ("auto", ""):
         return int(setting)
+    need = preset.get("vram_full_gb", 3.4)
+    layers = preset.get("layers", 36)
     try:
         import torch
         free = torch.cuda.mem_get_info()[0] / 2**30  # GB
     except Exception:
         return 0  # 확인 불가 → 안전하게 CPU
-    if free >= 3.4:
-        return -1   # 전부 GPU
-    if free >= 2.2:
-        return 24
-    if free >= 1.5:
-        return 12
+    if free >= need:
+        return -1                    # 전부 GPU
+    if free >= need * 0.66:
+        return int(layers * 2 / 3)
+    if free >= need * 0.45:
+        return int(layers / 3)
     return 0        # CPU (32GB RAM이면 문장 단위 번역은 감당 가능)
 
 
-class LlamaCppBackend:
-    """llama.cpp GGUF — 기본 로컬 백엔드. 짧은 문장 번역에 지연이 가장 낮다.
+class _GgufWorker:
+    """llm_worker.py 서브프로세스 1개 관리 (기동/요청/정리).
 
     llama.cpp는 CUDA 오류 시 프로세스를 네이티브 abort로 죽일 수 있어,
-    서버 본체를 보호하기 위해 별도 워커 프로세스(server/llm_worker.py)로 돌린다.
+    서버 본체를 보호하기 위해 반드시 별도 프로세스로 돌린다.
     """
-    READY_TIMEOUT = 300   # 첫 로드(디스크 캐시 미스 포함) 대기
-    REPLY_TIMEOUT = 60
+    READY_TIMEOUT = 600   # 첫 로드(다운로드 포함 가능) 대기
 
-    def __init__(self):
-        import llama_cpp  # noqa: F401 — 미설치면 여기서 빠르게 실패해 다음 백엔드로
-        from huggingface_hub import hf_hub_download
-        preset = config.GGUF_PRESETS[config.GGUF_PRESET]
-        log.info("GGUF 다운로드/확인: %s / %s", preset["repo"], preset["file"])
-        path = hf_hub_download(preset["repo"], preset["file"])
-        self._lock = threading.Lock()
-        self._start_worker(path, preset)
-
-    def _start_worker(self, path: str, preset: dict):
+    def __init__(self, preset: dict):
         import subprocess
         import sys as _sys
-        gpu_layers = _auto_gpu_layers()
-        log.info("llama.cpp 워커 시작: %s (gpu_layers=%s)", path, gpu_layers)
+        from huggingface_hub import hf_hub_download
+        log.info("GGUF 다운로드/확인: %s / %s", preset["repo"], preset["file"])
+        path = hf_hub_download(preset["repo"], preset["file"])
+        self.gpu_layers = _auto_gpu_layers(preset)
+        log.info("llama.cpp 워커 시작: %s (mode=%s, gpu_layers=%s)",
+                 preset["file"], preset["mode"], self.gpu_layers)
         self.proc = subprocess.Popen(
             [_sys.executable, "-m", "server.llm_worker",
              "--model-path", path,
-             "--n-gpu-layers", str(gpu_layers),
+             "--n-gpu-layers", str(self.gpu_layers),
              "--n-ctx", "2048",
              "--mode", preset["mode"]],
             cwd=str(__import__("pathlib").Path(__file__).resolve().parent.parent),
@@ -130,13 +125,11 @@ class LlamaCppBackend:
         try:
             line = self._replies.get(timeout=self.READY_TIMEOUT)
         except queue.Empty:
-            self._kill()
+            self.kill()
             raise RuntimeError("llama.cpp 워커가 제한시간 안에 준비되지 않음")
         if line != "READY":
-            self._kill()
+            self.kill()
             raise RuntimeError(f"llama.cpp 워커 기동 실패: {line}")
-        where = "GPU" if gpu_layers != 0 else "CPU"
-        self.name = f"로컬 LLM ({preset['file'].split('.gguf')[0]}, llama.cpp/{where})"
 
     def _reader(self):
         try:
@@ -148,28 +141,74 @@ class LlamaCppBackend:
             pass
         self._replies.put('{"ok": false, "error": "워커 프로세스 종료됨"}')
 
-    def _kill(self):
+    def kill(self):
         try:
             self.proc.kill()
         except Exception:
             pass
 
-    def translate(self, text: str, src: str, dst: str, context=None) -> str:
+    def request(self, payload: dict, timeout: float = 60) -> dict:
         import json as _json
-        with self._lock:
-            if self.proc.poll() is not None:
-                raise RuntimeError("llama.cpp 워커가 죽어 있음 (VRAM 부족 가능성)")
-            self.proc.stdin.write(_json.dumps(
-                {"text": text, "src": src, "dst": dst, "context": context or []},
-                ensure_ascii=False) + "\n")
-            self.proc.stdin.flush()
+        if self.proc.poll() is not None:
+            raise RuntimeError("llama.cpp 워커가 죽어 있음 (VRAM 부족 가능성)")
+        self.proc.stdin.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+        self.proc.stdin.flush()
+        try:
+            reply = _json.loads(self._replies.get(timeout=timeout))
+        except queue.Empty:
+            self.kill()
+            raise RuntimeError("llama.cpp 워커 응답 시간 초과")
+        if not reply.get("ok"):
+            raise RuntimeError(f"워커 처리 실패: {reply.get('error')}")
+        return reply
+
+
+class LlamaCppBackend:
+    """llama.cpp GGUF — 기본 로컬 백엔드. 짧은 문장 번역에 지연이 가장 낮다.
+
+    Seed-X(번역 특화, 채팅 불가) 선택 시에는 맥락 기반 오전사 보정을 대신할
+    소형 보정 워커(Qwen3-1.7B)를 앞단에 함께 띄운다:
+      ASR 문장 → [보정 워커: 맥락으로 오인식 수정] → [Seed-X: 번역]
+    기본 Qwen3-4B는 채팅형이라 보정+번역을 한 호출에 처리 (실시간성 우선).
+    """
+
+    def __init__(self, preset_key: Optional[str] = None):
+        import llama_cpp  # noqa: F401 — 미설치면 여기서 빠르게 실패해 다음 백엔드로
+        self.preset_key = preset_key or config.GGUF_PRESET
+        preset = config.GGUF_PRESETS[self.preset_key]
+        self._lock = threading.Lock()
+        self._trans = _GgufWorker(preset)
+        self._corr: Optional[_GgufWorker] = None
+        if preset["mode"] == "seedx":
             try:
-                reply = _json.loads(self._replies.get(timeout=self.REPLY_TIMEOUT))
-            except queue.Empty:
-                self._kill()
-                raise RuntimeError("llama.cpp 워커 응답 시간 초과")
-            if not reply.get("ok"):
-                raise RuntimeError(f"워커 번역 실패: {reply.get('error')}")
+                self._corr = _GgufWorker(config.CORRECTOR_GGUF)
+            except Exception as e:
+                log.warning("보정 모델 로드 실패(%s) — 보정 없이 번역만 합니다", e)
+        where = "GPU" if self._trans.gpu_layers != 0 else "CPU"
+        corr_tag = " + 보정AI" if self._corr else ""
+        self.name = f"로컬 LLM ({preset['label']}{corr_tag}, llama.cpp/{where})"
+
+    def close(self):
+        """모델 전환 시 워커를 내려 VRAM 회수."""
+        self._trans.kill()
+        if self._corr:
+            self._corr.kill()
+
+    def translate(self, text: str, src: str, dst: str, context=None) -> str:
+        with self._lock:
+            if self._corr is not None and context:
+                try:
+                    fixed = self._corr.request(
+                        {"text": text, "context": context, "src": src, "dst": dst},
+                        timeout=30)["text"].strip()
+                    if fixed:
+                        if fixed != text:
+                            log.debug("보정: %r → %r", text[:40], fixed[:40])
+                        text = fixed
+                except Exception as e:
+                    log.warning("오전사 보정 실패(원문으로 진행): %s", e)
+            reply = self._trans.request(
+                {"text": text, "src": src, "dst": dst, "context": context or []})
             return reply["text"]
 
 
@@ -255,10 +294,11 @@ class NllbBackend:
 
 
 LOCAL_CHAIN = [
-    ("llama.cpp GGUF", LlamaCppBackend),
-    ("transformers 4bit", HfLlmBackend),
-    ("NLLB", NllbBackend),
-    ("Google", GoogleBackend),
+    # (표시명, 팩토리(preset_key), ASR 추론 락 필요 여부 — 같은 프로세스 CUDA 로드만 True)
+    ("llama.cpp GGUF", lambda preset: LlamaCppBackend(preset), False),
+    ("transformers 4bit", lambda preset: HfLlmBackend(), True),
+    ("NLLB", lambda preset: NllbBackend(), True),
+    ("Google", lambda preset: GoogleBackend(), False),
 ]
 
 # 백엔드는 전역 캐시로 공유한다 — 파이프라인 재시작(소스 변경 등)마다 새 Translator가
@@ -294,6 +334,7 @@ class Translator:
         self._backend = None
         self._backend_name = "미로드"
         self._engine = config.TRANSLATE_ENGINE_DEFAULT
+        self._model_preset = config.GGUF_PRESET
 
     # ---------- 백엔드 로드 ----------
     def set_engine(self, engine: str):
@@ -301,36 +342,61 @@ class Translator:
             self._engine = engine
             self._backend = None  # 다음 번역 때 재로드
 
+    def set_model(self, preset: str):
+        """로컬 번역 모델 프리셋 전환 (qwen3-4b / seedx-7b)."""
+        if preset in config.GGUF_PRESETS and preset != self._model_preset:
+            self._model_preset = preset
+            self._backend = None  # 다음 번역 때 새 모델 로드
+            label = config.GGUF_PRESETS[preset]["label"]
+            self.on_status(f"번역 모델을 {label}(으)로 전환 — 다음 문장부터 적용돼요")
+
+    def _cache_key(self) -> str:
+        return "google" if self._engine == "google" else f"local:{self._model_preset}"
+
+    def _evict_other_local(self, keep_key: str):
+        """다른 프리셋의 llama.cpp 워커를 내려 VRAM 회수 (8GB에 7B+4B 동시 적재 방지)."""
+        for key in list(_BACKEND_CACHE):
+            if key.startswith("local:") and key != keep_key:
+                backend = _BACKEND_CACHE.pop(key)
+                if hasattr(backend, "close"):
+                    try:
+                        backend.close()
+                        log.info("이전 번역 워커 종료: %s", key)
+                    except Exception:
+                        pass
+
     def _ensure_backend(self):
         if self._backend is not None:
             return self._backend
+        key = self._cache_key()
         with _BACKEND_LOCK:  # 전역 락: 동시 이중 로드 방지 (VRAM 보호)
-            cached = _BACKEND_CACHE.get(self._engine)
+            cached = _BACKEND_CACHE.get(key)
             if cached is not None:
                 self._backend = cached
             elif self._engine == "google":
                 self.on_status("번역 엔진 준비 중 (Google)…")
                 self._backend = GoogleBackend()
             else:
+                self._evict_other_local(key)
                 # 같은 프로세스 안의 무거운 CUDA 로드(HfLlm/NLLB)는 whisper 추론과
                 # 겹치지 않게 직렬화. llama.cpp는 별도 워커 프로세스라 제외
                 # (락을 잡으면 로드 동안 자막이 멎는다).
                 from .transcriber import _infer_lock as _asr_lock
                 import contextlib
-                for label, cls in LOCAL_CHAIN:
+                for label, factory, needs_asr_lock in LOCAL_CHAIN:
                     if self._stop.is_set():
                         raise RuntimeError("중지됨")
                     try:
                         self.on_status(f"번역 모델 준비 중 ({label})… 첫 실행은 다운로드로 오래 걸릴 수 있어요")
-                        guard = contextlib.nullcontext() if cls is LlamaCppBackend else _asr_lock
+                        guard = _asr_lock if needs_asr_lock else contextlib.nullcontext()
                         with guard:
-                            self._backend = cls()
+                            self._backend = factory(self._model_preset)
                         break
                     except Exception as e:
                         log.warning("번역 백엔드 %s 사용 불가: %s", label, e)
                 if self._backend is None:
                     raise RuntimeError("사용 가능한 번역 백엔드가 없습니다")
-            _BACKEND_CACHE[self._engine] = self._backend
+            _BACKEND_CACHE[key] = self._backend
         self._backend_name = self._backend.name
         self.on_status(f"번역 준비 완료: {self._backend_name}")
         return self._backend
@@ -342,7 +408,7 @@ class Translator:
         except Exception:
             return
         with _BACKEND_LOCK:
-            _BACKEND_CACHE[self._engine] = google
+            _BACKEND_CACHE[self._cache_key()] = google
         self._backend = google
         self._backend_name = google.name
         log.error("로컬 번역이 반복 실패해 Google 번역으로 전환합니다")

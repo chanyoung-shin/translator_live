@@ -178,7 +178,7 @@ class Session:
             self.broadcast({"type": "partial_translation", "id": job_id, "text": text})
 
     # ---------- 시작/중지 ----------
-    def start_pipeline(self, source_kind: str, engine: str):
+    def start_pipeline(self, source_kind: str, engine: str, model: str = None):
         with self._start_lock:
             self._stop_pipeline_locked()
             self.set_state("loading", "음성 인식 모델 로드 중… (최초 실행은 다운로드로 몇 분 걸려요)")
@@ -195,6 +195,8 @@ class Session:
                                                     "detail": s}),
             )
             self.translator.set_engine(engine)
+            if model:
+                self.translator.set_model(model)
             self.translator.start()
             # 번역 모델은 백그라운드 프리로드 (자막은 그동안에도 나오도록)
             threading.Thread(target=self.translator.preload, daemon=True).start()
@@ -292,8 +294,9 @@ async def ws_endpoint(ws: WebSocket):
             if t == "start":
                 source = msg.get("source", "system")
                 engine = msg.get("engine", config.TRANSLATE_ENGINE_DEFAULT)
+                model = msg.get("model")
                 threading.Thread(target=session.start_pipeline,
-                                 args=(source, engine), daemon=True).start()
+                                 args=(source, engine, model), daemon=True).start()
             elif t == "stop":
                 threading.Thread(target=session.stop_pipeline, daemon=True).start()
             elif t == "options":
@@ -301,6 +304,8 @@ async def ws_endpoint(ws: WebSocket):
                     session.live_translation = bool(msg["live_translation"])
                 if "engine" in msg and session.translator:
                     session.translator.set_engine(msg["engine"])
+                if "model" in msg and session.translator:
+                    session.translator.set_model(msg["model"])
             elif t == "clear":
                 session.transcript = []
     except WebSocketDisconnect:

@@ -116,6 +116,18 @@
       <p class="setting-hint">로컬 모델은 첫 실행 시 다운로드가 필요하지만, 이후 인터넷 없이 동작하고 회의 내용이 밖으로 나가지 않아요.</p>
     </section>
 
+    <section class="setting" id="modelSection">
+      <label>번역 모델 (로컬)</label>
+      <select id="modelSelect" class="select select-full">
+        <option value="qwen3-4b">Qwen3-4B — 기본 · 보정+번역 한 번에 (빠름, VRAM 2.7GB)</option>
+        <option value="seedx-7b">Seed-X 7B 번역 특화 + 보정 AI — 품질 최고 (VRAM ~6.5GB)</option>
+      </select>
+      <p class="setting-hint">Seed-X는 번역 전용 학습 모델이라 문장 품질이 가장 좋고,
+        오전사 보정은 함께 뜨는 소형 AI(Qwen3-1.7B)가 앞단에서 처리해요.
+        GPU 여유가 없으면 자동으로 일부를 CPU로 내립니다. 첫 선택 시 약 5.7GB 다운로드.
+        실행 중에도 바꿀 수 있고 다음 문장부터 적용됩니다.</p>
+    </section>
+
     <section class="setting">
       <label>세션</label>
       <button class="btn btn-danger-ghost" id="clearBtn">기록 지우기</button>

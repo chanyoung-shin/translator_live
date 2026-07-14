@@ -44,15 +44,32 @@ GGUF_PRESETS = {
     "qwen3-4b": {
         "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
         "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        "mode": "chat",
+        "mode": "chat",       # 채팅형 → 대화 맥락 기반 오전사 보정 지원
+        "layers": 36,
+        "vram_full_gb": 3.4,  # 전체 GPU 오프로드에 필요한 여유 VRAM
+        "label": "Qwen3-4B",
     },
     "seedx-7b": {
         "repo": "mradermacher/Seed-X-PPO-7B-GGUF",
         "file": "Seed-X-PPO-7B.Q4_K_M.gguf",
-        "mode": "seedx",
+        "mode": "seedx",      # 번역 특화 고정 프롬프트 → 맥락 보정 미지원
+        "layers": 32,
+        "vram_full_gb": 5.6,
+        "label": "Seed-X-7B",
     },
 }
-GGUF_GPU_LAYERS = int(os.environ.get("LB_GGUF_GPU_LAYERS", "-1"))  # -1 = 전부 GPU
+GGUF_GPU_LAYERS = os.environ.get("LB_GGUF_GPU_LAYERS", "auto")  # auto = 남은 VRAM 보고 결정
+
+# 오전사 보정용 소형 모델 — 번역 특화 모델(Seed-X)은 채팅형이 아니라 맥락 보정을
+# 못 하므로, seedx 선택 시 이 모델이 보정 단계로 함께 뜬다 (기본 Qwen 경로는 불필요)
+CORRECTOR_GGUF = {
+    "repo": "unsloth/Qwen3-1.7B-GGUF",
+    "file": "Qwen3-1.7B-Q4_K_M.gguf",
+    "mode": "correct",
+    "layers": 28,
+    "vram_full_gb": 1.6,
+    "label": "보정AI(Qwen3-1.7B)",
+}
 
 # transformers 폴백용 LLM
 LLM_MODEL = os.environ.get("LB_LLM_MODEL", "Qwen/Qwen3-4B-Instruct-2507")

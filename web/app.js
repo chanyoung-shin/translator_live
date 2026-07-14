@@ -15,6 +15,7 @@ const els = {
   fontSize: $("fontSize"), fontSizeVal: $("fontSizeVal"),
   showSource: $("showSource"), livePartialTrans: $("livePartialTrans"),
   themeSeg: $("themeSeg"), engineSelect: $("engineSelect"),
+  modelSection: $("modelSection"), modelSelect: $("modelSelect"),
   clearBtn: $("clearBtn"), sysInfoBody: $("sysInfoBody"),
 };
 
@@ -35,6 +36,7 @@ const settings = {
   livePartialTrans: true,
   theme: "dark",
   engine: "local",
+  model: "qwen3-4b",
   source: "system",
 };
 
@@ -61,6 +63,8 @@ function applySettings() {
   els.themeSeg.querySelectorAll(".seg-btn").forEach(b =>
     b.classList.toggle("active", b.dataset.themeVal === settings.theme));
   els.engineSelect.value = settings.engine;
+  els.modelSelect.value = settings.model;
+  els.modelSection.classList.toggle("hidden", settings.engine !== "local");
   els.sourceSelect.value = settings.source;
 }
 
@@ -74,7 +78,8 @@ function connect() {
     setStatus("idle", "대기 중");
     send({ type: "hello" });
     // 서버 상태와 로컬 설정 동기화 (서버 재시작/다른 브라우저 대비)
-    send({ type: "options", live_translation: settings.livePartialTrans, engine: settings.engine });
+    send({ type: "options", live_translation: settings.livePartialTrans,
+           engine: settings.engine, model: settings.model });
   };
 
   ws.onmessage = (ev) => {
@@ -315,7 +320,7 @@ els.startBtn.onclick = () => {
   if (running) {
     send({ type: "stop" });
   } else {
-    send({ type: "start", source: settings.source, engine: settings.engine });
+    send({ type: "start", source: settings.source, engine: settings.engine, model: settings.model });
     setStatus("loading", "시작하는 중…");
   }
 };
@@ -323,7 +328,8 @@ els.startBtn.onclick = () => {
 els.sourceSelect.onchange = () => {
   settings.source = els.sourceSelect.value;
   saveSettings();
-  if (running) send({ type: "start", source: settings.source, engine: settings.engine }); // 소스 변경 시 재시작
+  if (running) send({ type: "start", source: settings.source, engine: settings.engine,
+                      model: settings.model }); // 소스 변경 시 재시작
 };
 
 els.exportBtn.onclick = async () => {
@@ -370,8 +376,13 @@ els.themeSeg.onclick = (e) => {
 };
 els.engineSelect.onchange = () => {
   settings.engine = els.engineSelect.value;
-  saveSettings();
+  applySettings(); saveSettings();
   send({ type: "options", engine: settings.engine });
+};
+els.modelSelect.onchange = () => {
+  settings.model = els.modelSelect.value;
+  saveSettings();
+  send({ type: "options", model: settings.model });
 };
 els.clearBtn.onclick = () => {
   if (!confirm("지금까지의 기록을 모두 지울까요?")) return;

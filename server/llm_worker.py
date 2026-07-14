@@ -12,9 +12,22 @@ stdin EOF 시 종료 (부모 프로세스가 죽으면 자동 종료).
 """
 import argparse
 import json
+import re
 import sys
 
 from server.translator import LANG_NAME, SYSTEM_PROMPT, build_user_content
+
+# 오전사 보정 모드 프롬프트 (Qwen3-1.7B — /no_think로 추론 모드 끔)
+CORRECT_PROMPT = (
+    "You clean up real-time speech-recognition transcripts. "
+    "You are given recent conversation lines and the last transcribed [Line]. "
+    "Output ONLY the corrected version of the [Line], in the SAME language it is written in. "
+    "Fix words that were likely mis-heard (replaced by similar-sounding words) using the context. "
+    "If the line already looks correct, output it unchanged. "
+    "Never translate. Never add explanations or quotes. /no_think"
+)
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
 
 def main():
@@ -22,7 +35,7 @@ def main():
     ap.add_argument("--model-path", required=True)
     ap.add_argument("--n-gpu-layers", type=int, default=-1)
     ap.add_argument("--n-ctx", type=int, default=1024)
-    ap.add_argument("--mode", choices=["chat", "seedx"], default="chat")
+    ap.add_argument("--mode", choices=["chat", "seedx", "correct"], default="chat")
     args = ap.parse_args()
 
     from llama_cpp import Llama
@@ -49,6 +62,19 @@ def main():
                 out = llm(prompt, max_tokens=256, temperature=0.0,
                           stop=["\n", "Translate the following"])
                 result = out["choices"][0]["text"].strip()
+            elif args.mode == "correct":
+                ctx = "\n".join(c for c in context[-6:] if c)
+                user = (f"[Conversation so far]\n{ctx}\n\n[Line]\n{text}" if ctx
+                        else f"[Line]\n{text}")
+                out = llm.create_chat_completion(
+                    messages=[{"role": "system", "content": CORRECT_PROMPT},
+                              {"role": "user", "content": user}],
+                    temperature=0.0,
+                    max_tokens=max(64, len(text) * 2))
+                result = out["choices"][0]["message"]["content"]
+                result = _THINK_RE.sub("", result).strip().strip('"')
+                if not result:
+                    result = text  # 보정 결과가 비면 원문 유지
             else:
                 messages = [
                     {"role": "system",
