@@ -6,6 +6,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   statusPill: $("statusPill"), statusDot: $("statusDot"), statusText: $("statusText"),
   sourceSelect: $("sourceSelect"), startBtn: $("startBtn"), exportBtn: $("exportBtn"),
+  summaryBtn: $("summaryBtn"),
   settingsBtn: $("settingsBtn"), feed: $("feed"), feedWrap: $("feedWrap"),
   emptyState: $("emptyState"), scrollDownBtn: $("scrollDownBtn"),
   livePartialRow: $("livePartialRow"), livePartialText: $("livePartialText"),
@@ -156,6 +157,14 @@ function handleMessage(msg) {
       setStatus("error", msg.detail || "오류가 발생했어요");
       break;
     }
+    case "summary": {
+      renderSummary(msg.text);
+      break;
+    }
+    case "models": {
+      rebuildModelOptions(msg.options || []);
+      break;
+    }
     case "notice": {
       // 상태 필에 잠깐 표시 후 원래 상태 문구로 복귀
       const text = msg.detail || "";
@@ -304,6 +313,60 @@ function attachTranslation(id, text) {
   dst.classList.remove("pending");
   dst.textContent = text;
   maybeScroll();
+}
+
+// ---------- 회의 요약 카드 ----------
+function renderSummary(text) {
+  if (!text) return;
+  els.emptyState.classList.add("hidden");
+  let card = document.getElementById("summaryCard");
+  if (!card) {
+    card = document.createElement("article");
+    card.id = "summaryCard";
+    card.className = "utt summary-card";
+    els.feed.prepend(card);
+  }
+  card.innerHTML = "";
+  const meta = document.createElement("div");
+  meta.className = "utt-meta";
+  const chip = document.createElement("span");
+  chip.className = "chip";
+  chip.textContent = "📝 회의 요약";
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "utt-copy";
+  copyBtn.textContent = "복사";
+  copyBtn.onclick = () => {
+    navigator.clipboard.writeText(text);
+    copyBtn.textContent = "복사됨 ✓";
+    setTimeout(() => (copyBtn.textContent = "복사"), 1200);
+  };
+  meta.append(chip, copyBtn);
+  const body = document.createElement("div");
+  body.className = "summary-body";
+  // 최소 마크다운: **굵게** 와 줄바꿈만 (XSS 방지 위해 먼저 이스케이프)
+  const esc = text.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  body.innerHTML = esc.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
+  card.append(meta, body);
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+els.summaryBtn.onclick = () => send({ type: "summarize" });
+
+// ---------- 모델 목록 (서버가 models/ 폴더 스캔 결과 전송) ----------
+function rebuildModelOptions(options) {
+  if (!options.length) return;
+  els.modelSelect.innerHTML = "";
+  for (const o of options) {
+    const opt = document.createElement("option");
+    opt.value = o.value;
+    opt.textContent = o.label;
+    els.modelSelect.appendChild(opt);
+  }
+  if (![...els.modelSelect.options].some(o => o.value === settings.model)) {
+    settings.model = "qwen3-4b";
+    saveSettings();
+  }
+  els.modelSelect.value = settings.model;
 }
 
 // ---------- 자동 스크롤 ----------

@@ -153,6 +153,9 @@ class Session:
         self.pipelines: list[Pipeline] = []
         self.translator: Optional[Translator] = None
         self.transcript: list[dict] = []
+        self.summary: Optional[str] = None
+        self._summarizing = False
+        self._summary_tr: Optional[Translator] = None  # Google 엔진일 때 요약용 로컬 백엔드
         self.live_translation = True
         self.recording = False
         self._last_mt_words: dict[str, int] = {}   # 소스별 마지막 부분번역 안정단어 수
@@ -275,6 +278,48 @@ class Session:
             self._stop_pipeline_locked()
             self.set_state("idle", "대기 중")
 
+    # ---------- 회의 요약 ----------
+    def summarize(self):
+        if self._summarizing:
+            return
+        if not self.transcript:
+            self.notice("요약할 내용이 아직 없어요")
+            return
+        self._summarizing = True
+        try:
+            self.notice("📝 회의 요약 생성 중… (수십 초 걸릴 수 있어요)")
+            # 요약은 로컬 LLM 필요 — 번역 엔진이 Google이거나 시작 전이면 전용 로컬 백엔드 사용
+            tr = self.translator
+            if tr is None or tr.engine != "local":
+                if self._summary_tr is None:
+                    self._summary_tr = Translator(on_result=lambda *a: None,
+                                                  on_status=lambda s: None)
+                    self._summary_tr.set_engine("local")
+                tr = self._summary_tr
+            lines = []
+            for e in self.transcript:
+                who = "나" if e["source"] == "mic" else "상대방"
+                lines.append(f"[{who}] {e['src_text']}")
+            text = "\n".join(lines)
+            # 긴 회의: 나눠 요약(map) 후 병합(reduce)
+            if len(text) > config.SUMMARY_CHUNK_CHARS:
+                parts = []
+                for i in range(0, len(text), config.SUMMARY_CHUNK_CHARS):
+                    chunk = text[i:i + config.SUMMARY_CHUNK_CHARS]
+                    self.notice(f"📝 요약 중… ({i // config.SUMMARY_CHUNK_CHARS + 1}"
+                                f"/{-(-len(text) // config.SUMMARY_CHUNK_CHARS)} 구간)")
+                    parts.append(tr.summarize(chunk))
+                result = tr.summarize("\n\n---\n\n".join(parts), combine=True)
+            else:
+                result = tr.summarize(text)
+            self.summary = result
+            self.broadcast({"type": "summary", "text": result})
+        except Exception as e:
+            log.error("요약 실패: %s", e)
+            self.broadcast({"type": "error_toast", "detail": f"요약 실패: {e}"})
+        finally:
+            self._summarizing = False
+
     def _sysinfo(self) -> str:
         lines = [f"음성 인식: faster-whisper {config.ASR_MODEL} "
                  f"({config.ASR_DEVICE}/{config.ASR_COMPUTE})"]
@@ -304,6 +349,8 @@ async def export():
         return PlainTextResponse("내용 없음", status_code=404)
     lines = ["# 회의록 (LiveBridge)", "",
              f"- 내보낸 시각: {time.strftime('%Y-%m-%d %H:%M')}", ""]
+    if session.summary:
+        lines += ["## 요약", "", session.summary, "", "## 전체 기록", ""]
     for e in session.transcript:
         t = time.strftime("%H:%M:%S", time.localtime(e["time"]))
         who = "나" if e["source"] == "mic" else "상대방"
@@ -316,6 +363,23 @@ async def export():
                              headers={"Content-Disposition": "attachment; filename=meeting.md"})
 
 
+def _available_models() -> list:
+    """UI 모델 선택칸 목록: 기본 프리셋 + models/ 폴더의 커스텀 GGUF."""
+    options = [
+        {"value": "qwen3-4b", "label": "Qwen3-4B — 기본 · 빠름 (VRAM 2.7GB)"},
+        {"value": "qwen3-8b", "label": "Qwen3-8B — 품질 우선 (VRAM ~5.3GB)"},
+    ]
+    try:
+        if config.MODELS_DIR.is_dir():
+            for p in sorted(config.MODELS_DIR.glob("*.gguf")):
+                size = p.stat().st_size / 2**30
+                options.append({"value": f"file:{p.name}",
+                                "label": f"📁 {p.name} ({size:.1f}GB)"})
+    except Exception:
+        pass
+    return options
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -325,6 +389,11 @@ async def ws_endpoint(ws: WebSocket):
         {"type": "status", "state": session.state,
          "detail": "듣는 중" if session.state == "listening" else "대기 중"},
         ensure_ascii=False))
+    await ws.send_text(json.dumps({"type": "models", "options": _available_models()},
+                                  ensure_ascii=False))
+    if session.summary:
+        await ws.send_text(json.dumps({"type": "summary", "text": session.summary},
+                                      ensure_ascii=False))
     # 새로고침 대응: 기존 기록 재전송
     for e in session.transcript[-200:]:
         await ws.send_text(json.dumps({"type": "final", "id": e["id"], "text": e["src_text"],
@@ -360,8 +429,11 @@ async def ws_endpoint(ws: WebSocket):
                     session.translator.set_engine(msg["engine"])
                 if "model" in msg and session.translator:
                     session.translator.set_model(msg["model"])
+            elif t == "summarize":
+                threading.Thread(target=session.summarize, daemon=True).start()
             elif t == "clear":
                 session.transcript = []
+                session.summary = None
     except WebSocketDisconnect:
         pass
     finally:

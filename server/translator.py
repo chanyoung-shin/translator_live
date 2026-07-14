@@ -113,16 +113,19 @@ class _GgufWorker:
     def __init__(self, preset: dict):
         import subprocess
         import sys as _sys
-        from huggingface_hub import hf_hub_download
-        log.info("GGUF 다운로드/확인: %s / %s", preset["repo"], preset["file"])
-        path = hf_hub_download(preset["repo"], preset["file"])
+        if "path" in preset:  # 커스텀 GGUF (models/ 폴더)
+            path = str(preset["path"])
+        else:
+            from huggingface_hub import hf_hub_download
+            log.info("GGUF 다운로드/확인: %s / %s", preset["repo"], preset["file"])
+            path = hf_hub_download(preset["repo"], preset["file"])
         self.gpu_layers = _auto_gpu_layers(preset)
         log.info("llama.cpp 워커 시작: %s (mode=%s, gpu_layers=%s)",
-                 preset["file"], preset["mode"], self.gpu_layers)
+                 preset["label"], preset["mode"], self.gpu_layers)
         cmd = [_sys.executable, "-m", "server.llm_worker",
                "--model-path", path,
                "--n-gpu-layers", str(self.gpu_layers),
-               "--n-ctx", "2048",
+               "--n-ctx", str(preset.get("n_ctx", 2048)),
                "--mode", preset["mode"]]
         if preset.get("nothink"):
             cmd.append("--nothink")
@@ -175,19 +178,38 @@ class _GgufWorker:
         return reply
 
 
+def resolve_preset(key: str) -> dict:
+    """프리셋 키 → 설정 딕셔너리. "file:이름.gguf" 는 models/ 폴더의 커스텀 모델."""
+    if key.startswith("file:"):
+        name = key[5:]
+        p = config.MODELS_DIR / name
+        if not p.is_file():
+            raise FileNotFoundError(f"models 폴더에 {name} 파일이 없습니다")
+        size_gb = p.stat().st_size / 2**30
+        return {
+            "path": p,
+            "mode": "chat",     # GGUF에 내장된 채팅 템플릿 사용
+            "n_ctx": 4096,
+            "layers": 999,      # 레이어 수 미상 → 사실상 전부 GPU 또는 CPU 이분
+            "vram_full_gb": size_gb * 1.25 + 0.5,
+            "label": name,
+        }
+    return config.GGUF_PRESETS[key]
+
+
 class LlamaCppBackend:
     """llama.cpp GGUF — 기본 로컬 백엔드. 짧은 문장 번역에 지연이 가장 낮다.
 
     Seed-X(번역 특화, 채팅 불가) 선택 시에는 맥락 기반 오전사 보정을 대신할
-    소형 보정 워커(Qwen3-1.7B)를 앞단에 함께 띄운다:
+    보정 워커를 앞단에 함께 띄운다:
       ASR 문장 → [보정 워커: 맥락으로 오인식 수정] → [Seed-X: 번역]
-    기본 Qwen3-4B는 채팅형이라 보정+번역을 한 호출에 처리 (실시간성 우선).
+    채팅형 모델(Qwen 등)은 보정+번역을 한 호출에 처리 (실시간성 우선).
     """
 
     def __init__(self, preset_key: Optional[str] = None):
         import llama_cpp  # noqa: F401 — 미설치면 여기서 빠르게 실패해 다음 백엔드로
         self.preset_key = preset_key or config.GGUF_PRESET
-        preset = config.GGUF_PRESETS[self.preset_key]
+        preset = resolve_preset(self.preset_key)
         self._lock = threading.Lock()
         self._trans = _GgufWorker(preset)
         self._corr: Optional[_GgufWorker] = None
@@ -221,6 +243,13 @@ class LlamaCppBackend:
                     log.warning("오전사 보정 실패(원문으로 진행): %s", e)
             reply = self._trans.request(
                 {"text": text, "src": src, "dst": dst, "context": context or []})
+            return reply["text"]
+
+    def summarize(self, text: str, combine: bool = False) -> str:
+        """회의 전사 요약 (한국어). combine=True면 부분 요약들을 병합."""
+        with self._lock:
+            reply = self._trans.request(
+                {"task": "summarize", "text": text, "combine": combine}, timeout=300)
             return reply["text"]
 
 
@@ -350,18 +379,33 @@ class Translator:
         self._model_preset = config.GGUF_PRESET
 
     # ---------- 백엔드 로드 ----------
+    @property
+    def engine(self) -> str:
+        return self._engine
+
     def set_engine(self, engine: str):
         if engine in ("local", "google") and engine != self._engine:
             self._engine = engine
             self._backend = None  # 다음 번역 때 재로드
 
     def set_model(self, preset: str):
-        """로컬 번역 모델 프리셋 전환 (qwen3-4b / seedx-7b)."""
-        if preset in config.GGUF_PRESETS and preset != self._model_preset:
-            self._model_preset = preset
-            self._backend = None  # 다음 번역 때 새 모델 로드
-            label = config.GGUF_PRESETS[preset]["label"]
-            self.on_status(f"번역 모델을 {label}(으)로 전환 — 다음 문장부터 적용돼요")
+        """로컬 번역 모델 전환 (프리셋 키 또는 "file:이름.gguf")."""
+        if preset == self._model_preset:
+            return
+        try:
+            label = resolve_preset(preset)["label"]
+        except Exception as e:
+            log.warning("모델 전환 불가 (%s): %s", preset, e)
+            return
+        self._model_preset = preset
+        self._backend = None  # 다음 번역 때 새 모델 로드
+        self.on_status(f"번역 모델을 {label}(으)로 전환 — 다음 문장부터 적용돼요")
+
+    def summarize(self, text: str, combine: bool = False) -> str:
+        backend = self._ensure_backend()
+        if not hasattr(backend, "summarize"):
+            raise RuntimeError("현재 번역 엔진은 요약을 지원하지 않습니다 — 설정에서 로컬 AI 모델을 선택해 주세요")
+        return backend.summarize(text, combine=combine)
 
     def _cache_key(self) -> str:
         return "google" if self._engine == "google" else f"local:{self._model_preset}"

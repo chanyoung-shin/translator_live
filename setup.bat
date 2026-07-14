@@ -25,17 +25,28 @@ if not exist .venv (
     echo [1/4] 가상환경 확인 완료
 )
 
-echo [2/4] PyTorch CUDA 설치 중... 약 2.5GB, 오래 걸려요
+where nvidia-smi >nul 2>nul
+if errorlevel 1 (
+    echo [안내] NVIDIA GPU 미감지 - CPU 버전으로 설치합니다 ^(다운로드가 훨씬 작아요^)
+    echo        CPU에서는 음성인식이 자동으로 작은 모델로 전환됩니다.
+    set "TORCH_INDEX=https://download.pytorch.org/whl/cpu"
+    set "LLAMA_INDEX=https://abetlen.github.io/llama-cpp-python/whl/cpu"
+) else (
+    set "TORCH_INDEX=https://download.pytorch.org/whl/cu126"
+    set "LLAMA_INDEX=https://abetlen.github.io/llama-cpp-python/whl/cu124"
+)
+
+echo [2/4] PyTorch 설치 중... (GPU 버전은 약 2.5GB, 오래 걸려요)
 .venv\Scripts\python.exe -m pip install --upgrade pip --quiet
-.venv\Scripts\python.exe -m pip install "torch>=2.4" --index-url https://download.pytorch.org/whl/cu126
+.venv\Scripts\python.exe -m pip install "torch>=2.4" --index-url %TORCH_INDEX%
 
 echo [3/4] 앱 의존성 설치 중...
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 
 echo [4/4] llama.cpp 로컬 번역 LLM 런타임 설치 중...
-.venv\Scripts\python.exe -m pip install llama-cpp-python --only-binary=llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+.venv\Scripts\python.exe -m pip install llama-cpp-python --only-binary=llama-cpp-python --extra-index-url %LLAMA_INDEX%
 if errorlevel 1 (
-    echo [안내] llama-cpp-python CUDA 휠 설치 실패 - 앱은 transformers/NLLB/Google 번역으로 자동 대체됩니다.
+    echo [안내] llama-cpp-python 휠 설치 실패 - 앱은 transformers/NLLB/Google 번역으로 자동 대체됩니다.
 )
 
 echo.

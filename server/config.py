@@ -22,7 +22,10 @@ PARTIAL_INTERVAL_SEC = 0.7     # 부분(파티셜) 자막 갱신 주기
 MIN_SPEECH_SEC = 0.25          # 이보다 짧은 발화는 무시
 
 # ---------- ASR (faster-whisper) ----------
-ASR_MODEL = os.environ.get("LB_ASR_MODEL", "large-v3-turbo")   # → mobiuslabsgmbh CT2 변환 (MIT)
+# 기본은 가벼운 small (VRAM ~0.5GB, 반응 빠름). 인식 정확도를 올리려면:
+#   set LB_ASR_MODEL=large-v3-turbo   (VRAM ~1.6GB, 한국어/전문용어에 훨씬 강함)
+ASR_MODEL = os.environ.get("LB_ASR_MODEL", "small")
+ASR_MODEL_IS_DEFAULT = "LB_ASR_MODEL" not in os.environ  # CPU 폴백 시 자동 축소 허용 여부
 ASR_DEVICE = os.environ.get("LB_ASR_DEVICE", "cuda")
 ASR_COMPUTE = os.environ.get("LB_ASR_COMPUTE", "int8_float16")  # ~1.6GB VRAM
 ASR_BEAM_PARTIAL = 1           # 부분: greedy (지연 최소)
@@ -46,7 +49,8 @@ GGUF_PRESETS = {
         "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
         "mode": "chat",       # 채팅형 → 대화 맥락 기반 오전사 보정 지원
         "layers": 36,
-        "vram_full_gb": 3.4,  # 전체 GPU 오프로드에 필요한 여유 VRAM
+        "vram_full_gb": 3.7,  # 전체 GPU 오프로드에 필요한 여유 VRAM (n_ctx 4096 포함)
+        "n_ctx": 4096,        # 요약 기능을 위해 넉넉히
         "label": "Qwen3-4B",
     },
     "qwen3-8b": {
@@ -55,7 +59,8 @@ GGUF_PRESETS = {
         "mode": "chat",
         "nothink": True,      # 하이브리드 추론 모델 — 빈 <think> 프리필로 즉답 유도
         "layers": 36,
-        "vram_full_gb": 6.0,
+        "vram_full_gb": 6.3,
+        "n_ctx": 4096,
         "label": "Qwen3-8B",
     },
     # 실험용 — UI에는 노출 안 함: Seed-X GGUF는 언어 태그(<ko>)가 특수 토큰으로
@@ -101,6 +106,13 @@ CONTEXT_LINES = 6
 
 # 회의 도메인 용어 (음성인식 정확도 힌트) — 예: set LB_VOCAB=LiveBridge, Kubernetes, 쿼터
 VOCAB = os.environ.get("LB_VOCAB", "")
+
+# 커스텀 번역 모델: 이 폴더에 .gguf 파일을 넣으면 UI 모델 선택칸에 자동으로 나타남
+import pathlib
+MODELS_DIR = pathlib.Path(__file__).resolve().parent.parent / "models"
+
+# 요약: 전사가 이 길이(자)를 넘으면 나눠 요약 후 합침 (n_ctx 4096 안에 들어가게)
+SUMMARY_CHUNK_CHARS = 6000
 
 # 번역 방향: whisper가 감지한 언어 → 목표 언어
 TARGET_LANG_FOR = {

@@ -123,6 +123,7 @@ body {
 }
 .btn:active { transform: scale(0.97); }
 .btn .icon { width: 16px; height: 16px; }
+.btn .icon-emoji { font-size: 15px; line-height: 1; }
 
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-primary:hover { filter: brightness(1.1); }
@@ -245,6 +246,15 @@ body.hide-source .utt-src { display: none; }
   color: var(--text-3);
   font-weight: 400;
 }
+
+/* 회의 요약 카드 */
+.summary-card { border-color: var(--accent); background: var(--accent-soft); }
+.summary-body {
+  font-size: calc(0.95rem * var(--caption-scale));
+  line-height: 1.75;
+  word-break: keep-all;
+}
+.summary-body strong { color: var(--accent); }
 .utt-dst.pending::after {
   content: "번역 중";
   font-size: 0.75em;

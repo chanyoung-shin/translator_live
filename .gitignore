@@ -3,9 +3,10 @@
 __pycache__/
 *.pyc
 
-# 테스트 산출물 / 로그 / 녹음
+# 테스트 산출물 / 로그 / 녹음 / 커스텀 모델
 tests/sample_en.wav
 recordings/
+models/
 *.log
 
 # 로컬 설정

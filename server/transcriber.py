@@ -48,8 +48,17 @@ def get_model():
                 _model = WhisperModel(config.ASR_MODEL, device=config.ASR_DEVICE,
                                       compute_type=config.ASR_COMPUTE)
             except Exception as e:
-                log.warning("GPU 로드 실패(%s) — CPU(int8)로 대체합니다", e)
-                _model = WhisperModel(config.ASR_MODEL, device="cpu", compute_type="int8")
+                # 내장그래픽/무GPU 환경: large 모델은 CPU에서 실시간을 못 따라가므로
+                # (사용자가 모델을 명시하지 않았다면) small로 자동 축소 + 갱신 주기 완화
+                model_name = config.ASR_MODEL
+                if config.ASR_MODEL_IS_DEFAULT:
+                    model_name = "small"
+                    config.PARTIAL_INTERVAL_SEC = max(config.PARTIAL_INTERVAL_SEC, 1.5)
+                    log.warning("GPU 사용 불가(%s) — CPU 모드: ASR을 small로 자동 전환, "
+                                "부분자막 주기 1.5초", e)
+                else:
+                    log.warning("GPU 로드 실패(%s) — CPU(int8)로 %s 유지", e, model_name)
+                _model = WhisperModel(model_name, device="cpu", compute_type="int8")
         return _model
 
 

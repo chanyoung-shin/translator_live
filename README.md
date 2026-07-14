@@ -20,7 +20,8 @@ Zoom / Teams / Google Meet 회의 소리를 **컴퓨터 안에서** 실시간으
 
 | 역할 | 모델 | 라이선스 | VRAM |
 |---|---|---|---|
-| 음성 인식 | Whisper **large-v3-turbo** (faster-whisper/CTranslate2, int8_float16) | MIT | ~1.6GB |
+| 음성 인식 (기본) | Whisper **small** (faster-whisper/CTranslate2, int8_float16) | MIT | ~0.5GB |
+| 음성 인식 (고정밀) | `set LB_ASR_MODEL=large-v3-turbo` — 한국어/전문용어에 훨씬 강함 | MIT | ~1.6GB |
 | 번역 (기본) | **Qwen3-4B-Instruct-2507** Q4_K_M (llama.cpp) | Apache-2.0 | ~2.7GB |
 | 번역 (품질 우선) | **Qwen3-8B** Q4_K_M (llama.cpp) | Apache-2.0 | ~5.3GB |
 | 번역 폴백 | NLLB-200-distilled-600M → Google 번역(온라인) | CC-BY-NC / — | ~0.7GB |
@@ -50,6 +51,10 @@ RTX 4070 Laptop(8GB) 기준: 기본 조합 ≈ 4.5GB로 Zoom과 GPU를 공유해
 - **자동 방향**: 영어→한국어, 한국어→영어 자동 감지 번역
 - **소스 선택**: 시스템 오디오(상대방) / 마이크(나) / 둘 다
 - **회의록 저장**: 타임스탬프 + 원문 + 번역을 마크다운으로 내보내기
+- **AI 회의 요약**: 📝 버튼 하나로 전사 내용을 **주요 논의 / 결정 사항 / 할 일** 구조로
+  한국어 요약 (긴 회의는 나눠 요약 후 병합, 회의록 내보내기에 포함)
+- **커스텀 번역 모델**: `models/` 폴더에 원하는 `.gguf` 파일을 넣으면 설정의 모델
+  선택칸에 자동으로 나타남 (채팅형 instruct 모델이면 동작, 생각형 모델도 처리)
 - **회의 녹음**: 설정에서 켜면 듣는 동안의 소리를 `recordings/` 폴더에 WAV로 저장
   (소스별 파일, 실행 중에도 켜고 끄기 가능 — 녹음 시 상대방 동의는 매너!)
 - **가독성**: 글자 크기 조절, 다크/라이트 테마, 원문 숨기기
@@ -60,7 +65,8 @@ RTX 4070 Laptop(8GB) 기준: 기본 조합 ≈ 4.5GB로 Zoom과 GPU를 공유해
 | 증상 | 해결 |
 |---|---|
 | 자막이 안 나옴 | 소리가 실제로 스피커/이어폰으로 나오는지 확인 (음소거 상태면 캡처될 소리가 없음) |
-| 한국어 인식이 부정확함 | `set LB_ASR_MODEL=large-v3` 후 run.bat — 더 크고 정확한 모델 (약간 느려짐, VRAM +1.5GB) |
+| 인식이 부정확함 (특히 한국어) | `set LB_ASR_MODEL=large-v3-turbo` 후 run.bat — 고정밀 모델 (VRAM +1.1GB) |
+| GPU가 없는 컴퓨터 | 그대로 동작 — setup.bat이 CPU 버전을 설치하고, 인식 모델도 자동으로 CPU에 맞게 조정. 번역은 느리면 Google 엔진 권장 |
 | 전문 용어를 자꾸 틀리게 받아적음 | `set LB_VOCAB=제품명, 용어1, 용어2` 후 run.bat — 인식 힌트로 사용됨 |
 | `cudnn_ops64_9.dll` 오류 | `setup.bat` 재실행 (CUDA용 PyTorch가 DLL을 제공) |
 | GPU 메모리 부족 | 게임/브라우저 탭 정리, 또는 `set LB_ASR_MODEL=distil-large-v3` (영어 전용) |
