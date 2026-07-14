@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiveBridge — 실시간 회의 번역</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎧</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-icon">🎧</span>
+    <span class="brand-name">LiveBridge</span>
+    <span class="status-pill" id="statusPill">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">연결 중…</span>
+    </span>
+  </div>
+
+  <div class="controls">
+    <select id="sourceSelect" class="select" title="오디오 소스 선택">
+      <option value="system">🔊 시스템 오디오 (회의 소리)</option>
+      <option value="mic">🎙️ 마이크 (내 목소리)</option>
+      <option value="both">🔊+🎙️ 둘 다</option>
+    </select>
+
+    <button id="startBtn" class="btn btn-primary">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="6 4 20 12 6 20" fill="currentColor" stroke="none"/></svg>
+      <span>시작</span>
+    </button>
+
+    <button id="exportBtn" class="btn btn-ghost" title="회의록 저장 (.md)">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <span class="btn-label">저장</span>
+    </button>
+
+    <button id="settingsBtn" class="btn btn-ghost" title="설정">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="feed-wrap" id="feedWrap">
+  <div class="feed" id="feed">
+    <div class="empty-state" id="emptyState">
+      <div class="empty-icon">💬</div>
+      <h2>회의 번역을 시작할 준비가 됐어요</h2>
+      <ol class="empty-steps">
+        <li>Zoom / Teams / Meet 회의에 참여하세요</li>
+        <li>위에서 오디오 소스를 고르세요 — 회의 소리를 번역하려면 <b>시스템 오디오</b></li>
+        <li><b>시작</b> 버튼을 누르면 실시간 자막 + 한국어 번역이 나타납니다</li>
+      </ol>
+      <p class="empty-note">처음 시작할 때는 AI 모델을 불러오느라 시간이 걸릴 수 있어요 (최초 1회는 모델 다운로드).</p>
+    </div>
+  </div>
+</main>
+
+<button id="scrollDownBtn" class="scroll-down-btn hidden">↓ 최신 자막으로</button>
+
+<footer class="live-bar" id="liveBar">
+  <div class="live-inner">
+    <div class="live-row live-src hidden" id="livePartialRow">
+      <span class="live-chip" id="liveChip">듣는 중</span>
+      <span class="live-text" id="livePartialText"></span><span class="caret"></span>
+    </div>
+    <div class="live-row live-dst hidden" id="liveTransRow">
+      <span class="live-trans" id="liveTransText"></span>
+    </div>
+    <div class="live-idle" id="liveIdle">🎧 대기 중 — [시작]을 누르면 여기에 실시간 자막이 표시됩니다</div>
+  </div>
+</footer>
+
+<!-- 설정 드로어 -->
+<div class="drawer-backdrop hidden" id="drawerBackdrop"></div>
+<aside class="drawer hidden" id="drawer">
+  <div class="drawer-head">
+    <h3>설정</h3>
+    <button class="btn btn-ghost" id="drawerClose">✕</button>
+  </div>
+
+  <div class="drawer-body">
+    <section class="setting">
+      <label>번역 글자 크기</label>
+      <div class="row">
+        <input type="range" id="fontSize" min="80" max="180" value="110" step="5">
+        <span class="range-val" id="fontSizeVal">110%</span>
+      </div>
+    </section>
+
+    <section class="setting">
+      <label>원문(영어) 표시</label>
+      <label class="switch"><input type="checkbox" id="showSource" checked><span class="slider"></span></label>
+    </section>
+
+    <section class="setting">
+      <label>말하는 중 미리 번역 (실시간 번역)</label>
+      <label class="switch"><input type="checkbox" id="livePartialTrans" checked><span class="slider"></span></label>
+    </section>
+
+    <section class="setting">
+      <label>테마</label>
+      <div class="seg" id="themeSeg">
+        <button data-theme-val="dark" class="seg-btn active">다크</button>
+        <button data-theme-val="light" class="seg-btn">라이트</button>
+      </div>
+    </section>
+
+    <section class="setting">
+      <label>번역 엔진</label>
+      <select id="engineSelect" class="select select-full">
+        <option value="local">로컬 AI 모델 (오프라인, 추천)</option>
+        <option value="google">Google 번역 (온라인, 즉시 시작)</option>
+      </select>
+      <p class="setting-hint">로컬 모델은 첫 실행 시 다운로드가 필요하지만, 이후 인터넷 없이 동작하고 회의 내용이 밖으로 나가지 않아요.</p>
+    </section>
+
+    <section class="setting">
+      <label>세션</label>
+      <button class="btn btn-danger-ghost" id="clearBtn">기록 지우기</button>
+    </section>
+
+    <section class="setting sysinfo" id="sysInfo">
+      <label>시스템 정보</label>
+      <div class="sysinfo-body" id="sysInfoBody">—</div>
+    </section>
+  </div>
+</aside>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

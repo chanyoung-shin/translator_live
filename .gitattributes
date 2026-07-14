@@ -1,0 +1,2 @@
+# .bat 파일은 반드시 CRLF (LF면 한국어 Windows cmd에서 파싱이 깨짐)
+*.bat text eol=crlf

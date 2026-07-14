@@ -1,0 +1,14 @@
+# LiveBridge 의존성
+# (torch 는 setup.bat 에서 CUDA 버전으로, llama-cpp-python 은 CUDA 휠 인덱스로 별도 설치)
+fastapi
+uvicorn[standard]
+faster-whisper==1.2.1
+transformers>=4.56.0
+accelerate
+bitsandbytes>=0.49.2
+PyAudioWPatch==0.2.12.8
+numpy
+scipy
+soxr>=0.5
+deep-translator
+huggingface_hub

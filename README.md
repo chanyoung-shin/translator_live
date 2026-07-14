@@ -1,2 +1,99 @@
-# translator_live
-This is a real-time translation app built using free open-source models; it is useful for Zoom and Google Meet sessions. Please send any bug reports to scypoo77@gmail.com.
+# 🎧 LiveBridge — 실시간 회의 번역
+
+Zoom / Teams / Google Meet 회의 소리를 **컴퓨터 안에서** 실시간으로 받아 적고(영어),
+한국어로 번역해 보여주는 로컬 앱입니다. 회의 내용이 외부 서버로 나가지 않습니다
+(Google 번역 엔진을 선택한 경우만 예외).
+
+![구조](https://img.shields.io/badge/100%25-%EB%A1%9C%EC%BB%AC%20%EC%8B%A4%ED%96%89-blue)
+
+## 빠른 시작
+
+1. **`setup.bat` 더블클릭** — 가상환경 + 의존성 설치 (최초 1회, 약 3~5GB 다운로드)
+2. **`run.bat` 더블클릭** — 서버 실행 + 브라우저 자동 열림 (http://127.0.0.1:8765)
+3. 회의에 참여한 뒤, 앱에서 소스를 **🔊 시스템 오디오**로 두고 **[시작]** 클릭
+4. 실시간 영어 자막(하단) + 한국어 번역(카드)이 흘러나옵니다
+5. 회의가 끝나면 **[저장]** 으로 회의록(.md) 다운로드
+
+> 첫 [시작] 때는 AI 모델을 자동 다운로드합니다 (약 4~5GB, 이후엔 오프라인 동작).
+
+## 사용된 오픈소스 모델 (2026-07 기준 리서치로 선정)
+
+| 역할 | 모델 | 라이선스 | VRAM |
+|---|---|---|---|
+| 음성 인식 | Whisper **large-v3-turbo** (faster-whisper/CTranslate2, int8_float16) | MIT | ~1.6GB |
+| 번역 (기본) | **Qwen3-4B-Instruct-2507** Q4_K_M (llama.cpp) | Apache-2.0 | ~2.7GB |
+| 번역 (품질 우선) | **Seed-X-PPO-7B** Q4_K_M — 번역 특화 모델 | OpenMDW (허용적) | ~5GB |
+| 번역 폴백 | NLLB-200-distilled-600M → Google 번역(온라인) | CC-BY-NC / — | ~0.7GB |
+
+RTX 4070 Laptop(8GB) 기준: 기본 조합 ≈ 4.5GB로 Zoom과 GPU를 공유해도 여유가 있습니다.
+
+### 번역 품질을 더 올리고 싶다면 (Seed-X 사용)
+
+VRAM이 빠듯해질 수 있지만 번역 품질이 가장 좋습니다:
+
+```bat
+set LB_GGUF=seedx-7b
+run.bat
+```
+
+## 주요 기능
+
+- **실시간 부분 자막**: 말하는 중에도 자막이 나오고, 연속 인식에서 확정된 부분은 진하게,
+  아직 흔들리는 부분은 흐리게 표시 (LocalAgreement 안정화)
+- **맥락 기반 오전사 보정**: 최근 대화 맥락을 번역 LLM에 함께 전달 —
+  음성인식이 비슷한 발음으로 잘못 받아적어도 (예: "번역 모델"→"백번 모델")
+  맥락으로 의도를 파악해 자연스럽게 번역
+- **자동 방향**: 영어→한국어, 한국어→영어 자동 감지 번역
+- **소스 선택**: 시스템 오디오(상대방) / 마이크(나) / 둘 다
+- **회의록 저장**: 타임스탬프 + 원문 + 번역을 마크다운으로 내보내기
+- **가독성**: 글자 크기 조절, 다크/라이트 테마, 원문 숨기기
+- **장치 변경 대응**: 회의 중 이어폰/블루투스 전환 시 자동 재연결
+
+## 문제 해결
+
+| 증상 | 해결 |
+|---|---|
+| 자막이 안 나옴 | 소리가 실제로 스피커/이어폰으로 나오는지 확인 (음소거 상태면 캡처될 소리가 없음) |
+| 한국어 인식이 부정확함 | `set LB_ASR_MODEL=large-v3` 후 run.bat — 더 크고 정확한 모델 (약간 느려짐, VRAM +1.5GB) |
+| 전문 용어를 자꾸 틀리게 받아적음 | `set LB_VOCAB=제품명, 용어1, 용어2` 후 run.bat — 인식 힌트로 사용됨 |
+| `cudnn_ops64_9.dll` 오류 | `setup.bat` 재실행 (CUDA용 PyTorch가 DLL을 제공) |
+| GPU 메모리 부족 | 게임/브라우저 탭 정리, 또는 `set LB_ASR_MODEL=distil-large-v3` (영어 전용) |
+| 번역이 느림 | 설정에서 엔진을 "Google 번역"으로 임시 전환 |
+| 마이크 인식 안 됨 | Windows 설정 → 개인정보 → 마이크에서 접근 허용 |
+| 헤드셋(블루투스) 음질 저하 | 헤드셋이 통화(HFP) 모드로 전환된 것 — 자막 인식에는 지장 없음 |
+| 회의 중 스피커/이어폰을 바꿨더니 자막이 멈춤 | 약 10초 안에 자동으로 새 장치를 따라갑니다. "둘 다" 모드에서만 안 따라올 수 있는데, 그때는 [중지] 후 다시 [시작] |
+
+## 구조
+
+```
+server/
+  main.py           FastAPI + WebSocket 오케스트레이션
+  audio_capture.py  WASAPI 루프백/마이크 캡처 (PyAudioWPatch, 콜백+큐)
+  transcriber.py    faster-whisper 스트리밍 인식 (VAD + LocalAgreement)
+  translator.py     번역 (llama.cpp → transformers → NLLB → Google 폴백)
+  config.py         모든 파라미터
+web/                UI (바닐라 HTML/CSS/JS)
+tests/              E2E 스모크 테스트 (TTS 합성음성으로 전체 파이프라인 검증)
+```
+
+### 테스트
+
+```bat
+.venv\Scripts\python.exe -m tests.test_pipeline --engine google
+```
+
+## 라이선스
+
+Copyright (c) 2026 신찬영. 이 프로젝트는 **[PolyForm Noncommercial License 1.0.0](LICENSE.md)** 으로 배포됩니다.
+
+- ✅ 개인적·비상업적 사용, 수정, 공유 자유
+- ❌ **상업적 이용 금지** (판매, 유료 서비스 제공, 회사 업무 도입 등)
+- 재배포 시 이 라이선스 전문과 아래 고지를 반드시 포함해야 합니다:
+
+```
+Required Notice: Copyright (c) 2026 신찬영 (sejongmanji@gmail.com) - LiveBridge
+```
+
+상업적 이용을 원하시면 저작권자에게 별도 라이선스를 문의하세요.
+
+> 참고: 번역 폴백으로 포함된 NLLB-200 모델 자체도 CC-BY-NC-4.0(비상업)입니다.
