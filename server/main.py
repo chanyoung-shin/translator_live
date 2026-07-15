@@ -21,7 +21,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .audio_capture import AudioSource, list_devices
-from .transcriber import SegmentAssembler, Utterance, get_model, reset_model, wait_asr_idle
+from .transcriber import (AudioPrep, SegmentAssembler, Utterance, get_model,
+                          reset_model, wait_asr_idle)
 from .translator import Translator
 
 logging.basicConfig(level=logging.INFO,
@@ -88,6 +89,7 @@ class Pipeline:
         루프백은 무음 중 콜백이 안 오므로, 큐 타임아웃을 침묵 시간으로 흘린다."""
         block = int(config.TARGET_SR * config.BLOCK_SEC)
         rec: Optional[_WavRecorder] = None
+        prep = AudioPrep()  # 하이패스 + AGC (먼/조용한 소리 증폭) — 인식용에만 적용
         try:
             while not self._stop.is_set():
                 try:
@@ -114,7 +116,7 @@ class Pipeline:
                 elif rec is not None:
                     self.session.notice(f"💾 녹음 저장: {rec.close().name}")
                     rec = None
-                self._acc.append(chunk)
+                self._acc.append(prep.process(chunk))
                 self._acc_len += len(chunk)
                 while self._acc_len >= block:
                     buf = np.concatenate(self._acc)

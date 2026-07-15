@@ -64,12 +64,17 @@ def main():
     args = ap.parse_args()
 
     from llama_cpp import Llama
-    llm = Llama(
+    kwargs = dict(
         model_path=args.model_path,
         n_gpu_layers=args.n_gpu_layers,
         n_ctx=args.n_ctx,
         verbose=False,
     )
+    try:
+        # flash attention: Ada(RTX 40xx)에서 프롬프트 처리/디코드 소폭 단축 (기본은 꺼져 있음)
+        llm = Llama(flash_attn=True, **kwargs)
+    except Exception:
+        llm = Llama(**kwargs)  # 휠이 FA 미지원이면 없이 로드
     print("@@READY", flush=True)
 
     def chat(system: str, user: str, max_tokens: int) -> str:
@@ -134,7 +139,7 @@ def main():
                     result = text  # 보정 결과가 비면 원문 유지
             else:
                 target = LANG_NAME.get(dst, "Korean")
-                result = chat(SYSTEM_PROMPT.format(target=target),
+                result = chat(SYSTEM_PROMPT,
                               build_user_content(text, context, target),
                               max_tokens=min(512, max(48, len(text) * 2)))
             print("@@" + json.dumps({"ok": True, "text": result}, ensure_ascii=False), flush=True)

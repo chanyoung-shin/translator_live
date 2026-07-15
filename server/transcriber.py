@@ -72,19 +72,86 @@ def get_model():
 
 # ---------- VAD (Silero, faster-whisper 내장 onnx — torch 불필요) ----------
 class Vad:
+    """상태 유지 스트리밍 Silero VAD + 히스테리시스.
+
+    이전에는 0.2초 블록마다 get_speech_timestamps()를 새로 불러 LSTM 상태가
+    매번 초기화됐다 — 조용한/먼 발화의 확률이 낮게 나와 말끝이 끊기고 통째로
+    유실되는 원인 (리서치로 검증). Silero의 문서화된 스트리밍 방식대로
+    512샘플(32ms) 창을 순차 공급하며 h/c 상태와 64샘플 문맥을 세션 내내 유지한다.
+    히스테리시스: 시작은 VAD_THRESHOLD, 종료는 그보다 0.15 낮게 — 경계 떨림 방지.
+    """
+    WIN = 512
+    CTX = 64
+
     def __init__(self):
-        from faster_whisper.vad import get_speech_timestamps, VadOptions
-        self._get_ts = get_speech_timestamps
-        self._opts = VadOptions(threshold=config.VAD_THRESHOLD,
-                                min_speech_duration_ms=100,
-                                min_silence_duration_ms=100)
+        from faster_whisper.vad import get_vad_model
+        self._session = get_vad_model().session
+        self._h = np.zeros((1, 1, 128), dtype=np.float32)
+        self._c = np.zeros((1, 1, 128), dtype=np.float32)
+        self._ctx = np.zeros(self.CTX, dtype=np.float32)
+        self._rem = np.zeros(0, dtype=np.float32)
+        self._speaking = False
 
     def has_speech(self, chunk: np.ndarray) -> bool:
+        thr_on = config.VAD_THRESHOLD
+        thr_off = max(0.15, thr_on - 0.15)
         try:
-            return len(self._get_ts(chunk, self._opts)) > 0
+            data = np.concatenate([self._rem, chunk.astype(np.float32)])
+            n = len(data) // self.WIN
+            self._rem = data[n * self.WIN:]
+            any_speech = False
+            for i in range(n):
+                win = data[i * self.WIN:(i + 1) * self.WIN]
+                inp = np.concatenate([self._ctx, win]).reshape(1, -1).astype(np.float32)
+                out, self._h, self._c = self._session.run(
+                    None, {"input": inp, "h": self._h, "c": self._c})
+                p = float(out.flatten()[0])
+                self._ctx = win[-self.CTX:]
+                if self._speaking:
+                    if p < thr_off:
+                        self._speaking = False
+                else:
+                    if p >= thr_on:
+                        self._speaking = True
+                if self._speaking:
+                    any_speech = True
+            return any_speech
         except Exception:
             # VAD 실패 시 에너지 기반 폴백
             return float(np.sqrt(np.mean(chunk ** 2))) > 0.01
+
+
+class AudioPrep:
+    """하이패스(80Hz) + 소리 감지 연동 AGC — 멀리서 나는 조용한 소리를 증폭.
+
+    메타 안경 등 상용 파이프라인의 표준 전처리를 단순화한 것:
+    노이즈 플로어를 추적하면서, 그보다 충분히 큰 소리(발화로 추정)가 있을 때만
+    게인을 조정한다 — 무음 구간에서 노이즈를 증폭하는 것 방지.
+    이미 충분히 큰 소리(시스템 오디오)는 게인 1.0으로 그대로 통과.
+    """
+    TARGET_RMS = 0.08     # ≈ -22dBFS
+    MAX_GAIN = 10.0
+
+    def __init__(self):
+        from scipy.signal import butter, sosfilt_zi
+        self._sos = butter(2, 80, "highpass", fs=config.TARGET_SR, output="sos")
+        self._zi = sosfilt_zi(self._sos) * 0.0
+        self._gain = 1.0
+        self._floor = 1e-3
+
+    def process(self, chunk: np.ndarray) -> np.ndarray:
+        from scipy.signal import sosfilt
+        y, self._zi = sosfilt(self._sos, chunk, zi=self._zi)
+        rms = float(np.sqrt(np.mean(y ** 2)) + 1e-9)
+        # 노이즈 플로어 추적: 조용해지면 빠르게 따라가고, 커질 땐 천천히
+        if rms < self._floor:
+            self._floor = 0.9 * self._floor + 0.1 * rms
+        else:
+            self._floor = min(self._floor * 1.02, 0.02)
+        if rms > max(3.0 * self._floor, 3e-4):  # 발화로 추정될 때만 게인 적응
+            desired = min(self.MAX_GAIN, max(1.0, self.TARGET_RMS / rms))
+            self._gain = 0.85 * self._gain + 0.15 * desired
+        return np.clip(y * self._gain, -1.0, 1.0).astype(np.float32)
 
 
 # ---------- 환각/노이즈 필터 ----------
@@ -298,7 +365,13 @@ class SegmentAssembler:
             without_timestamps=True,
             temperature=0.0,
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
+            # 내부 VAD 임계값을 바깥 게이트와 일치시킴 — 명시하지 않으면 기본값
+            # 0.5가 적용돼, 바깥(0.4)이 통과시킨 조용한 오디오를 여기서 다시
+            # 잘라버린다 (강의 소리 유실의 직접 원인, 리서치로 검증된 버그)
+            vad_parameters=dict(threshold=config.VAD_THRESHOLD,
+                                neg_threshold=max(0.15, config.VAD_THRESHOLD - 0.2),
+                                min_silence_duration_ms=500,
+                                speech_pad_ms=300),
             no_speech_threshold=config.NO_SPEECH_THRESHOLD,
             log_prob_threshold=config.LOG_PROB_THRESHOLD,
             compression_ratio_threshold=config.COMPRESSION_RATIO_THRESHOLD,

@@ -30,16 +30,20 @@ NLLB_CODE = {
     "en": "eng_Latn", "ko": "kor_Hang", "ja": "jpn_Jpan", "zh": "zho_Hans",
     "es": "spa_Latn", "fr": "fra_Latn", "de": "deu_Latn", "vi": "vie_Latn",
 }
+# 완전히 정적인 프롬프트 (변수 없음) — llama.cpp는 직전 호출과 같은 접두어의
+# KV 캐시를 자동 재사용하는데, 목표 언어가 프롬프트 중간에 끼면 en→ko/ko→en이
+# 번갈 때마다 캐시가 그 지점에서 깨진다. 목표 언어는 유저 메시지 끝에서 지정.
 SYSTEM_PROMPT = (
     "You are a professional simultaneous interpreter for business meetings. "
     "The source line comes from real-time speech recognition, so it may contain "
     "mis-recognized words (replaced by similar-sounding ones) or broken grammar. "
     "Use the conversation context to infer what the speaker actually meant, "
-    "silently fix likely recognition errors, and translate the line into natural, "
-    "fluent {target}. Output ONLY the translation of the [Line to translate] — "
+    "silently fix likely recognition errors, and translate the line into the "
+    "requested target language, natural and fluent. "
+    "Output ONLY the translation of the [Line to translate] — "
     "no quotes, no notes, no explanations. "
     "Keep technical terms, product names and numbers as-is when appropriate. "
-    "For Korean, use polite spoken style (해요체)."
+    "For Korean output, use polite spoken style (해요체)."
 )
 
 
@@ -314,7 +318,7 @@ class HfLlmBackend:
         torch = self._torch
         messages = [
             {"role": "system",
-             "content": SYSTEM_PROMPT.format(target=LANG_NAME.get(dst, "Korean"))},
+             "content": SYSTEM_PROMPT},
             {"role": "user",
              "content": build_user_content(text, context, LANG_NAME.get(dst, "Korean"))},
         ]
