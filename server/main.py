@@ -208,8 +208,36 @@ class Session:
         entries = self.transcript[:-1] if exclude_last else self.transcript
         return [e["src_text"] for e in entries[-config.CONTEXT_LINES:]]
 
+    _TERMINAL_PUNCT = ".?!…。」”\"'"
+
+    def _is_continuation(self, prev: dict, u: Utterance) -> bool:
+        """새 확정이 직전 문장의 이어짐인지 — 긴 발화가 강제 컷으로 쪼개진 경우
+        따로 번역하면 어색하므로 합쳐서 재번역한다."""
+        if prev["source"] != u.source or prev["lang"] != u.lang:
+            return False
+        if len(prev["src_text"]) > 600:   # 무한 병합 방지
+            return False
+        gap = (u.time - u.dur) - prev["time"]  # 앞 문장 끝 ~ 새 문장 시작 사이 침묵
+        if gap > 2.0:
+            return False
+        tail = prev["src_text"].rstrip()
+        return bool(tail) and tail[-1] not in self._TERMINAL_PUNCT  # 문장이 안 끝났음
+
     def on_final(self, u: Utterance):
         self._last_mt_words[u.source] = 0
+        prev = self.transcript[-1] if self.transcript else None
+        if prev is not None and self._is_continuation(prev, u):
+            # 직전 카드에 이어붙이고 합쳐진 전체 문장을 재번역
+            prev["src_text"] = (prev["src_text"] + " " + u.text).strip()
+            prev["dst_text"] = None
+            prev["time"] = u.time
+            self.broadcast({"type": "final_update", "id": prev["id"],
+                            "text": prev["src_text"]})
+            if self.translator:
+                context = [e["src_text"] for e in self.transcript[:-1][-config.CONTEXT_LINES:]]
+                self.translator.submit_final(prev["id"], prev["src_text"], prev["lang"],
+                                             context=context)
+            return
         context = self._recent_context()  # 현재 문장 추가 전 = 이전 문장들
         entry = {"id": u.id, "source": u.source, "time": u.time,
                  "src_text": u.text, "dst_text": None, "lang": u.lang}
@@ -367,8 +395,9 @@ async def export():
 def _available_models() -> list:
     """UI 모델 선택칸 목록: 기본 프리셋 + models/ 폴더의 커스텀 GGUF."""
     options = [
-        {"value": "qwen3-4b", "label": "Qwen3-4B — 기본 · 빠름 (VRAM 2.7GB)"},
+        {"value": "qwen3-4b", "label": "Qwen3-4B — 기본 · 권장 (VRAM 2.7GB)"},
         {"value": "qwen3-8b", "label": "Qwen3-8B — 품질 우선 (VRAM ~5.3GB)"},
+        {"value": "qwen3-1.7b", "label": "Qwen3-1.7B — 초경량 · CPU/저사양용 (품질 낮음)"},
     ]
     try:
         if config.MODELS_DIR.is_dir():

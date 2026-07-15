@@ -127,8 +127,9 @@ class Utterance:
     text: str            # 전체 텍스트
     stable: str          # LocalAgreement로 안정된 접두어 (partial일 때만 의미)
     lang: str
-    time: float          # epoch
+    time: float          # epoch (발화 종료 시각)
     is_final: bool
+    dur: float = 0.0     # 오디오 길이(초) — 이어짐(continuation) 판정용
 
 
 class AsrWorker:
@@ -270,7 +271,10 @@ class SegmentAssembler:
             self._buffered_silence_sec += dur
 
         total = sum(len(c) for c in self._buf) / config.TARGET_SR
-        if self._silence_sec * 1000 >= config.SILENCE_FINALIZE_MS or total >= config.MAX_SEGMENT_SEC:
+        # 구간이 길어지면 침묵 기준을 낮춰 자연스러운 미세 호흡에서 마감
+        # (22초 강제 컷으로 문장이 단어 중간에서 쪼개지는 것 최소화)
+        limit_ms = config.SILENCE_FINALIZE_MS if total < 15.0 else 300
+        if self._silence_sec * 1000 >= limit_ms or total >= config.MAX_SEGMENT_SEC:
             self._finalize()
         elif time.monotonic() - self._last_partial_t >= config.PARTIAL_INTERVAL_SEC:
             self._last_partial_t = time.monotonic()
@@ -393,7 +397,8 @@ class SegmentAssembler:
         self.on_final(Utterance(
             id=f"{self.source}-{int(end_time*1000)}-{self._counter}",
             source=self.source, text=text, stable=text,
-            lang=effective_lang(text, lang), time=end_time, is_final=True))
+            lang=effective_lang(text, lang), time=end_time, is_final=True,
+            dur=len(audio) / config.TARGET_SR))
 
     def flush(self):
         """중지 시 남아있는 발화를 확정."""

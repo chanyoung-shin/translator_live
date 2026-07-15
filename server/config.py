@@ -44,6 +44,16 @@ TRANSLATE_ENGINE_DEFAULT = os.environ.get("LB_ENGINE", "local")
 #   seedx-7b : ByteDance Seed-X-PPO-7B, 번역 특화 최고 품질, Q4_K_M ≈4.6GB — VRAM 빠듯
 GGUF_PRESET = os.environ.get("LB_GGUF", "qwen3-4b")
 GGUF_PRESETS = {
+    "qwen3-1.7b": {
+        "repo": "unsloth/Qwen3-1.7B-GGUF",
+        "file": "Qwen3-1.7B-Q4_K_M.gguf",
+        "mode": "chat",
+        "nothink": True,      # 하이브리드 추론 모델 — 빈 <think> 프리필로 즉답
+        "layers": 28,
+        "vram_full_gb": 2.2,
+        "n_ctx": 4096,
+        "label": "Qwen3-1.7B",
+    },
     "qwen3-4b": {
         "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
         "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
@@ -102,7 +112,8 @@ PARTIAL_TRANSLATE_MIN_NEW_WORDS = 3  # 새 안정 단어가 이만큼 쌓여야 
 
 # 맥락 기반 번역/오전사 보정: 최근 확정 문장 N개를 번역 LLM에 함께 전달
 # → 음성인식이 비슷한 발음으로 잘못 받아적어도 맥락으로 의도를 살려 번역
-CONTEXT_LINES = 6
+# (많을수록 보정은 좋아지지만 문장마다 프롬프트 처리 비용 증가 — 4가 균형점)
+CONTEXT_LINES = 4
 
 # 회의 도메인 용어 (음성인식 정확도 힌트) — 예: set LB_VOCAB=LiveBridge, Kubernetes, 쿼터
 VOCAB = os.environ.get("LB_VOCAB", "")

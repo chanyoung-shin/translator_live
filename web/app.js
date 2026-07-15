@@ -149,6 +149,19 @@ function handleMessage(msg) {
       clearPartial();
       break;
     }
+    case "final_update": {
+      // 쪼개진 문장이 직전 카드에 병합됨 — 원문 갱신 + 번역 다시 대기
+      const card = cards.get(msg.id);
+      if (card) {
+        card.querySelector(".utt-src").textContent = msg.text;
+        const dst = card.querySelector(".utt-dst");
+        dst.textContent = "";
+        dst.classList.add("pending");
+      }
+      clearPartial();
+      maybeScroll();
+      break;
+    }
     case "translation": {
       attachTranslation(msg.id, msg.text);
       break;

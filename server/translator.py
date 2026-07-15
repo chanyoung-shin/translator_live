@@ -223,6 +223,8 @@ class LlamaCppBackend:
         corr_tag = " + 보정AI" if self._corr else ""
         self.name = f"로컬 LLM ({preset['label']}{corr_tag}, llama.cpp/{where})"
 
+    _PROMOTE_CHECK_SEC = 60.0  # CPU로 밀려난 워커의 GPU 복귀 확인 주기
+
     def _ensure_alive(self):
         """워커가 죽어 있으면(다른 앱의 VRAM 점유 등) 현재 GPU 여유에 맞춰 재시작.
         재시작 시 _auto_gpu_layers가 다시 계산되므로, VRAM이 부족해졌으면
@@ -232,6 +234,16 @@ class LlamaCppBackend:
             self._trans = _GgufWorker(self._preset)
             where = "GPU" if self._trans.gpu_layers != 0 else "CPU"
             log.info("번역 워커 재시작 완료 (%s)", where)
+        elif self._trans.gpu_layers != -1:
+            # VRAM 부족으로 CPU/부분 오프로드에 머물러 있으면 번역이 계속 느리다
+            # → 주기적으로 확인해서 GPU 여유가 돌아왔으면 GPU로 재승격
+            now = time.monotonic()
+            if now - getattr(self, "_last_promote_check", 0) >= self._PROMOTE_CHECK_SEC:
+                self._last_promote_check = now
+                if _auto_gpu_layers(self._preset) == -1:
+                    log.info("GPU 여유 회복 감지 → 번역 워커를 GPU로 재승격")
+                    self._trans.kill()
+                    self._trans = _GgufWorker(self._preset)
         if self._corr is not None and self._corr.proc.poll() is not None:
             self._corr = None  # 보정기는 없어도 동작하므로 조용히 비활성화
 
@@ -528,6 +540,12 @@ class Translator:
                 continue
             try:
                 backend = self._ensure_backend()
+                # 워커가 CPU로 밀려나 있으면(문장당 수 초) 부분 번역은 생략하고
+                # 확정 번역에 자원 집중 — 큐가 밀려 몰아서 출력되는 것 방지
+                if not job.is_final:
+                    trans = getattr(backend, "_trans", None)
+                    if trans is not None and trans.gpu_layers == 0:
+                        continue
                 dst = target_for(job.src)
                 if job.src == dst:
                     result = job.text
