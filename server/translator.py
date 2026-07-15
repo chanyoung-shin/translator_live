@@ -210,6 +210,7 @@ class LlamaCppBackend:
         import llama_cpp  # noqa: F401 — 미설치면 여기서 빠르게 실패해 다음 백엔드로
         self.preset_key = preset_key or config.GGUF_PRESET
         preset = resolve_preset(self.preset_key)
+        self._preset = preset  # 워커 사망 시 재시작용
         self._lock = threading.Lock()
         self._trans = _GgufWorker(preset)
         self._corr: Optional[_GgufWorker] = None
@@ -222,6 +223,18 @@ class LlamaCppBackend:
         corr_tag = " + 보정AI" if self._corr else ""
         self.name = f"로컬 LLM ({preset['label']}{corr_tag}, llama.cpp/{where})"
 
+    def _ensure_alive(self):
+        """워커가 죽어 있으면(다른 앱의 VRAM 점유 등) 현재 GPU 여유에 맞춰 재시작.
+        재시작 시 _auto_gpu_layers가 다시 계산되므로, VRAM이 부족해졌으면
+        자동으로 일부/전부 CPU로 내려간 채 살아난다."""
+        if self._trans.proc.poll() is not None:
+            log.warning("번역 워커 사망 감지 → 재시작 (GPU 여유에 맞춰 재배치)")
+            self._trans = _GgufWorker(self._preset)
+            where = "GPU" if self._trans.gpu_layers != 0 else "CPU"
+            log.info("번역 워커 재시작 완료 (%s)", where)
+        if self._corr is not None and self._corr.proc.poll() is not None:
+            self._corr = None  # 보정기는 없어도 동작하므로 조용히 비활성화
+
     def close(self):
         """모델 전환 시 워커를 내려 VRAM 회수."""
         self._trans.kill()
@@ -230,6 +243,7 @@ class LlamaCppBackend:
 
     def translate(self, text: str, src: str, dst: str, context=None) -> str:
         with self._lock:
+            self._ensure_alive()
             if self._corr is not None and context:
                 try:
                     fixed = self._corr.request(
@@ -248,6 +262,7 @@ class LlamaCppBackend:
     def summarize(self, text: str, combine: bool = False) -> str:
         """회의 전사 요약 (한국어). combine=True면 부분 요약들을 병합."""
         with self._lock:
+            self._ensure_alive()
             reply = self._trans.request(
                 {"task": "summarize", "text": text, "combine": combine}, timeout=300)
             return reply["text"]
