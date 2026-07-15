@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .audio_capture import AudioSource, list_devices
-from .transcriber import SegmentAssembler, Utterance, get_model
+from .transcriber import SegmentAssembler, Utterance, get_model, wait_asr_idle
 from .translator import Translator
 
 logging.basicConfig(level=logging.INFO,
@@ -268,6 +268,7 @@ class Session:
         for pl in self.pipelines:
             pl.stop()
         self.pipelines = []
+        wait_asr_idle(10)  # 마지막 확정 인식이 끝나야 번역 큐에 들어간다
         if self.translator:
             self.translator.stop()
         self._last_mt_words = {}

@@ -13,6 +13,7 @@ whisper는 스트리밍 모델이 아니므로:
 from __future__ import annotations
 
 import logging
+import queue
 import re
 import threading
 import time
@@ -130,6 +131,77 @@ class Utterance:
     is_final: bool
 
 
+class AsrWorker:
+    """whisper 추론 전용 스레드 — 캡처/VAD(펌프)와 분리.
+
+    이전에는 펌프 스레드가 추론까지 직접 실행해서, GPU가 바쁘면(게임·번역 경합)
+    추론이 도는 몇 초 동안 오디오 처리가 통째로 멈추고 새 발화가 밀렸다.
+    이제 펌프는 스냅샷만 넘기고 즉시 다음 오디오를 처리한다.
+      - 확정(final) 작업: FIFO — 빠짐없이 순서대로
+      - 부분(partial) 작업: 소스별 최신 것만 — 추론이 밀리면 중간 프레임은 건너뜀
+    """
+
+    def __init__(self):
+        self._finals: "queue.Queue" = queue.Queue()
+        self._partials: dict = {}          # source -> 작업 (최신만 유지)
+        self._plock = threading.Lock()
+        self._busy = False
+        self._thread = None
+        self._start_lock = threading.Lock()
+
+    def _ensure_started(self):
+        with self._start_lock:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._loop, name="asr-worker",
+                                                daemon=True)
+                self._thread.start()
+
+    def submit_final(self, fn):
+        self._ensure_started()
+        self._finals.put(fn)
+
+    def submit_partial(self, source: str, fn):
+        self._ensure_started()
+        with self._plock:
+            self._partials[source] = fn
+
+    def wait_idle(self, timeout: float = 10.0) -> bool:
+        """확정 작업이 모두 처리될 때까지 대기 (중지 시 마지막 문장 보존용)."""
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            if self._finals.empty() and not self._busy:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def _loop(self):
+        while True:
+            fn = None
+            try:
+                fn = self._finals.get(timeout=0.1)
+            except queue.Empty:
+                with self._plock:
+                    if self._partials:
+                        key = next(iter(self._partials))
+                        fn = self._partials.pop(key)
+            if fn is None:
+                continue
+            self._busy = True
+            try:
+                fn()
+            except Exception:
+                log.exception("ASR 작업 오류")
+            finally:
+                self._busy = False
+
+
+_asr_worker = AsrWorker()
+
+
+def wait_asr_idle(timeout: float = 10.0) -> bool:
+    return _asr_worker.wait_idle(timeout)
+
+
 @dataclass
 class SegmentAssembler:
     """오디오 청크를 발화 단위로 모으고, 부분/확정 인식 결과를 콜백으로 전달.
@@ -244,32 +316,46 @@ class SegmentAssembler:
         return text, info.language
 
     def _emit_partial(self):
+        """(펌프 스레드) 현재 구간 스냅샷을 추론 워커에 제출 — 여기서 추론하지 않음."""
         audio = np.concatenate(self._buf)
         if len(audio) / config.TARGET_SR < max(config.MIN_SPEECH_SEC, 0.5):
+            return
+        # 부분 자막은 표시용이므로 마지막 15초만 — 긴 발화에서 추론 비용 폭증 방지
+        window = int(15 * config.TARGET_SR)
+        if len(audio) > window:
+            audio = audio[-window:]
+        seg = self._seg_seq
+        _asr_worker.submit_partial(self.source, lambda: self._do_partial(audio, seg))
+
+    def _do_partial(self, audio: np.ndarray, seg: int):
+        """(추론 워커 스레드) 부분 인식 실행. 그 사이 구간이 확정됐으면 폐기."""
+        if seg != self._seg_seq or not self._active:
             return
         try:
             text, lang = self._transcribe(audio, final=False)
         except Exception as e:
             log.warning("부분 인식 오류: %s", e)
             return
-        if not text:
+        if not text or seg != self._seg_seq:
             return
         # LocalAgreement: 직전 부분 결과와의 공통 접두어만 '안정'
         words = text.split()
         stable_n = _common_prefix_len(self._prev_partial_words, words)
         self._prev_partial_words = words
         self.on_partial(Utterance(
-            id=f"{self.source}-s{self._seg_seq}", source=self.source, text=text,
+            id=f"{self.source}-s{seg}", source=self.source, text=text,
             stable=" ".join(words[:stable_n]),
             lang=effective_lang(text, lang), time=time.time(), is_final=False))
 
-    def _emit_segment_end(self):
+    def _emit_segment_end(self, seg: Optional[int] = None):
         """확정 없이 세그먼트가 버려질 때(짧음/환각/오류) 라이브 자막을 지우도록 빈 부분자막 전송."""
         self.on_partial(Utterance(
-            id=f"{self.source}-s{self._seg_seq}", source=self.source,
+            id=f"{self.source}-s{seg if seg is not None else self._seg_seq}",
+            source=self.source,
             text="", stable="", lang="en", time=time.time(), is_final=False))
 
     def _finalize(self):
+        """(펌프 스레드) 구간 마감: 상태 정리 후 확정 추론을 워커에 제출."""
         buf, self._buf = self._buf, []
         self._active = False
         self._pre_roll = []
@@ -287,21 +373,27 @@ class SegmentAssembler:
         trim = int(max(0.0, buffered_silence - 0.2) * config.TARGET_SR)
         if trim > 0 and len(audio) > trim:
             audio = audio[:-trim]
+        seg = self._seg_seq
+        end_time = time.time()
+        _asr_worker.submit_final(lambda: self._do_final(audio, seg, end_time))
+
+    def _do_final(self, audio: np.ndarray, seg: int, end_time: float):
+        """(추론 워커 스레드) 확정 인식 실행 — FIFO라 순서·유실 걱정 없음."""
         try:
             text, lang = self._transcribe(audio, final=True)
         except Exception as e:
             log.error("확정 인식 오류: %s", e)
-            self._emit_segment_end()
+            self._emit_segment_end(seg)
             return
         if not text:
-            self._emit_segment_end()
+            self._emit_segment_end(seg)
             return
         self._confirmed_tail = (self._confirmed_tail + " " + text)[-400:]
         self._counter += 1
         self.on_final(Utterance(
-            id=f"{self.source}-{int(time.time()*1000)}-{self._counter}",
+            id=f"{self.source}-{int(end_time*1000)}-{self._counter}",
             source=self.source, text=text, stable=text,
-            lang=effective_lang(text, lang), time=time.time(), is_final=True))
+            lang=effective_lang(text, lang), time=end_time, is_final=True))
 
     def flush(self):
         """중지 시 남아있는 발화를 확정."""

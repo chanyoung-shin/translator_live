@@ -73,6 +73,12 @@ def main():
     for i in range(0, len(padded), block):
         asm.feed(padded[i:i + block])
     asm.flush()
+    # 추론은 별도 워커 스레드에서 비동기 처리 — 완료 대기
+    from server.transcriber import wait_asr_idle
+    wait_asr_idle(timeout=300)
+    deadline = time.time() + 10
+    while not results["finals"] and time.time() < deadline:
+        time.sleep(0.2)
     print(f"   인식 완료 ({time.time()-t0:.1f}초)")
 
     assert results["finals"], "확정 인식 결과가 없습니다!"
