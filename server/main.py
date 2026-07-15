@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .audio_capture import AudioSource, list_devices
-from .transcriber import SegmentAssembler, Utterance, get_model, wait_asr_idle
+from .transcriber import SegmentAssembler, Utterance, get_model, reset_model, wait_asr_idle
 from .translator import Translator
 
 logging.basicConfig(level=logging.INFO,
@@ -158,6 +158,7 @@ class Session:
         self._summary_tr: Optional[Translator] = None  # Google 엔진일 때 요약용 로컬 백엔드
         self.live_translation = True
         self.recording = False
+        self.asr_model_pref: Optional[str] = None  # UI에서 고른 인식 모델 (다음 시작에 적용)
         self._last_mt_words: dict[str, int] = {}   # 소스별 마지막 부분번역 안정단어 수
         self._last_seg_id: dict[str, str] = {}     # 소스별 현재 세그먼트 id
         self._start_lock = threading.Lock()
@@ -209,19 +210,44 @@ class Session:
         return [e["src_text"] for e in entries[-config.CONTEXT_LINES:]]
 
     _TERMINAL_PUNCT = ".?!…。」”\"'"
+    # whisper는 잘린 조각에도 마침표를 붙이므로, 마침표만으로는 완결 판단 불가.
+    # 연결어/기능어로 끝나면 미완성 문장으로 본다 (실제 강의 로그에서 추출한 패턴:
+    # "we always hear like." / "I know she might." / "health issues from.")
+    _EN_CONNECTIVES = frozenset(
+        "like that to and but or so the a an of in on at by from with for as if when "
+        "which who whom whose because while than then she he it i we they you was is "
+        "are be been am do does did have has had will would can could may might shall "
+        "should must just really very kind sort some any my your our their his her its "
+        "this these those there here not no about into over under between through".split())
+    _KO_CONNECTIVE_ENDINGS = ("고", "서", "며", "지만", "는데", "니까", "면서", "려고", "든지")
+
+    def _looks_incomplete(self, text: str) -> bool:
+        t = text.rstrip().rstrip(self._TERMINAL_PUNCT).rstrip()
+        if not t:
+            return False
+        if t[-1] in ",:;-–—":
+            return True
+        last = t.split()[-1].strip("'\"’”").lower()
+        if last in self._EN_CONNECTIVES:
+            return True
+        return t.endswith(self._KO_CONNECTIVE_ENDINGS)
 
     def _is_continuation(self, prev: dict, u: Utterance) -> bool:
-        """새 확정이 직전 문장의 이어짐인지 — 긴 발화가 강제 컷으로 쪼개진 경우
+        """새 확정이 직전 문장의 이어짐인지 — 발화가 쪼개진 경우
         따로 번역하면 어색하므로 합쳐서 재번역한다."""
         if prev["source"] != u.source or prev["lang"] != u.lang:
             return False
         if len(prev["src_text"]) > 600:   # 무한 병합 방지
             return False
         gap = (u.time - u.dur) - prev["time"]  # 앞 문장 끝 ~ 새 문장 시작 사이 침묵
-        if gap > 2.0:
+        if gap > 2.5:
             return False
         tail = prev["src_text"].rstrip()
-        return bool(tail) and tail[-1] not in self._TERMINAL_PUNCT  # 문장이 안 끝났음
+        if not tail:
+            return False
+        if tail[-1] not in self._TERMINAL_PUNCT:
+            return True                    # 마침표 없이 끝남 = 명백한 미완성
+        return self._looks_incomplete(tail)  # 마침표는 있지만 연결어로 끝남
 
     def on_final(self, u: Utterance):
         self._last_mt_words[u.source] = 0
@@ -263,6 +289,9 @@ class Session:
         with self._start_lock:
             self._stop_pipeline_locked()
             self.set_state("loading", "음성 인식 모델 로드 중… (최초 실행은 다운로드로 몇 분 걸려요)")
+            if self.asr_model_pref and self.asr_model_pref != config.ASR_MODEL:
+                config.ASR_MODEL = self.asr_model_pref
+                reset_model()  # 다음 get_model()에서 새 모델 로드
             try:
                 get_model()  # whisper 지연 로드 (블로킹)
             except Exception as e:
@@ -455,6 +484,13 @@ async def ws_endpoint(ws: WebSocket):
                     session.live_translation = bool(msg["live_translation"])
                 if "recording" in msg:
                     session.recording = bool(msg["recording"])
+                if "asr_model" in msg and msg["asr_model"] in ("small", "large-v3-turbo"):
+                    session.asr_model_pref = msg["asr_model"]
+                if "silence_ms" in msg:
+                    try:
+                        config.SILENCE_FINALIZE_MS = max(300, min(2000, int(msg["silence_ms"])))
+                    except (TypeError, ValueError):
+                        pass
                 if "engine" in msg and session.translator:
                     session.translator.set_engine(msg["engine"])
                 if "model" in msg and session.translator:

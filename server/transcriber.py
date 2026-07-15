@@ -31,6 +31,13 @@ _model_lock = threading.Lock()
 _infer_lock = threading.Lock()
 
 
+def reset_model():
+    """인식 모델 변경 시 다음 get_model()에서 새로 로드하도록 리셋."""
+    global _model
+    with _model_lock:
+        _model = None
+
+
 def get_model():
     """whisper 모델 전역 싱글턴 (지연 로드)."""
     global _model

@@ -128,6 +128,24 @@
       <p class="setting-hint">로컬 모델은 첫 실행 시 다운로드가 필요하지만, 이후 인터넷 없이 동작하고 회의 내용이 밖으로 나가지 않아요.</p>
     </section>
 
+    <section class="setting">
+      <label>음성 인식 모델</label>
+      <select id="asrSelect" class="select select-full">
+        <option value="small">빠름 (small) — 또렷한 음성용</option>
+        <option value="large-v3-turbo">정확 (large-v3-turbo) — 강의·먼 소리·한국어 (VRAM +1.1GB)</option>
+      </select>
+      <p class="setting-hint">다음 [시작]부터 적용돼요. 노트북 마이크로 강의를 잡을 땐 "정확"을 추천.</p>
+    </section>
+
+    <section class="setting">
+      <label>문장 나누기</label>
+      <div class="seg" id="silenceSeg">
+        <button data-silence="600" class="seg-btn active">대화 (빠르게 끊기)</button>
+        <button data-silence="900" class="seg-btn">강의·발표 (길게 듣기)</button>
+      </div>
+      <p class="setting-hint">강의처럼 쉼 없이 이어지는 말은 "길게 듣기"가 문장을 덜 쪼개요. 바로 적용됩니다.</p>
+    </section>
+
     <section class="setting" id="modelSection">
       <label>번역 모델 (로컬)</label>
       <select id="modelSelect" class="select select-full">

@@ -17,6 +17,7 @@ const els = {
   showSource: $("showSource"), livePartialTrans: $("livePartialTrans"),
   recordToggle: $("recordToggle"),
   themeSeg: $("themeSeg"), engineSelect: $("engineSelect"),
+  asrSelect: $("asrSelect"), silenceSeg: $("silenceSeg"),
   modelSection: $("modelSection"), modelSelect: $("modelSelect"),
   clearBtn: $("clearBtn"), sysInfoBody: $("sysInfoBody"),
 };
@@ -40,6 +41,8 @@ const settings = {
   theme: "dark",
   engine: "local",
   model: "qwen3-4b",
+  asrModel: "small",
+  silenceMs: 600,
   source: "system",
 };
 
@@ -69,6 +72,9 @@ function applySettings() {
   els.engineSelect.value = settings.engine;
   els.modelSelect.value = settings.model;
   els.modelSection.classList.toggle("hidden", settings.engine !== "local");
+  els.asrSelect.value = settings.asrModel;
+  els.silenceSeg.querySelectorAll(".seg-btn").forEach(b =>
+    b.classList.toggle("active", Number(b.dataset.silence) === settings.silenceMs));
   els.sourceSelect.value = settings.source;
 }
 
@@ -83,7 +89,8 @@ function connect() {
     send({ type: "hello" });
     // 서버 상태와 로컬 설정 동기화 (서버 재시작/다른 브라우저 대비)
     send({ type: "options", live_translation: settings.livePartialTrans,
-           engine: settings.engine, model: settings.model, recording: settings.recording });
+           engine: settings.engine, model: settings.model, recording: settings.recording,
+           asr_model: settings.asrModel, silence_ms: settings.silenceMs });
   };
 
   ws.onmessage = (ev) => {
@@ -478,6 +485,18 @@ els.modelSelect.onchange = () => {
   settings.model = els.modelSelect.value;
   saveSettings();
   send({ type: "options", model: settings.model });
+};
+els.asrSelect.onchange = () => {
+  settings.asrModel = els.asrSelect.value;
+  saveSettings();
+  send({ type: "options", asr_model: settings.asrModel });
+};
+els.silenceSeg.onclick = (e) => {
+  const btn = e.target.closest(".seg-btn");
+  if (!btn) return;
+  settings.silenceMs = Number(btn.dataset.silence);
+  applySettings(); saveSettings();
+  send({ type: "options", silence_ms: settings.silenceMs });
 };
 els.clearBtn.onclick = () => {
   if (!confirm("지금까지의 기록을 모두 지울까요?")) return;

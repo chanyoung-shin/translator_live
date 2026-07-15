@@ -16,8 +16,8 @@ MAX_SEGMENT_SEC = 22.0     # whisper 30초 창 아래에서 강제 문장 확정
 PRE_ROLL_SEC = 0.4         # 발화 시작 직전 오디오 포함 (첫 음절 잘림 방지)
 
 # ---------- VAD / 세그먼트 (RealtimeSTT/whisper_streaming 검증 기본값 기반) ----------
-VAD_THRESHOLD = 0.5            # silero 발화 확률 임계값
-SILENCE_FINALIZE_MS = 600      # 이 시간 이상 조용하면 문장 확정
+VAD_THRESHOLD = 0.4            # silero 발화 확률 임계값 (0.5는 멀리서 나는 소리를 놓침)
+SILENCE_FINALIZE_MS = 600      # 이 시간 이상 조용하면 문장 확정 (UI '문장 나누기'로 조절)
 PARTIAL_INTERVAL_SEC = 0.7     # 부분(파티셜) 자막 갱신 주기
 MIN_SPEECH_SEC = 0.25          # 이보다 짧은 발화는 무시
 
